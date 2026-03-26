@@ -1,15 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
 
-<h2 class="mb-4">Welcome, {{ user.username }} 👋</h2>
+<h2 class="mb-1">Welcome, {{ user.username }}</h2>
+<p class="text-muted mb-1">Current dataset: {{ active_dataset_name }}</p>
+<p class="text-muted mb-4">{{ analysis_note }}</p>
 
 <div class="mb-4 d-flex gap-3 flex-wrap">
     <a href="{{ url_for('main_routes.upload_data') }}" class="btn btn-success">
-        Upload Sales Data
+        Upload Data
     </a>
 
     <a href="{{ url_for('main_routes.train_model_route') }}" class="btn btn-warning">
-        Retrain ML Model
+        Retrain Retail Model
     </a>
 
     <a href="{{ url_for('main_routes.download_report') }}" class="btn btn-primary">
@@ -17,38 +19,42 @@
     </a>
 </div>
 
-<div class="row g-4 mb-5">
+{% if model_info %}
+<div class="alert alert-light border mb-4">
+    Retail model: {{ model_info.best_model_name }} (R2 {{ model_info.best_accuracy }})
+    {% if model_last_trained %}
+    | Last trained: {{ model_last_trained }}
+    {% endif %}
+</div>
+{% endif %}
 
-    <div class="col-md-4">
-        <div class="card p-4 shadow-sm">
-            <h6>Total Revenue</h6>
-            <h3>₹{{ data.total_revenue if data else 0 }}</h3>
+<div class="row g-4 mb-4">
+    {% for card in summary_cards %}
+    <div class="col-md-3 col-sm-6">
+        <div class="card p-4 shadow-sm h-100">
+            <h6>{{ card.label }}</h6>
+            <h3>{{ card.value }}</h3>
         </div>
     </div>
-
-    <div class="col-md-4">
-        <div class="card p-4 shadow-sm">
-            <h6>Total Orders</h6>
-            <h3>{{ data.total_orders if data else 0 }}</h3>
-        </div>
-    </div>
-
-    <div class="col-md-4">
-        <div class="card p-4 shadow-sm">
-            <h6>Next Month Prediction</h6>
-            <h3>₹{{ prediction if prediction else "Train model first" }}</h3>
-        </div>
-    </div>
-
+    {% endfor %}
 </div>
 
-<hr class="my-4">
+<div class="row g-4 mb-5">
+    {% for field in detected_fields %}
+    <div class="col-md-3 col-sm-6">
+        <div class="card p-3 shadow-sm h-100">
+            <h6>{{ field.label }}</h6>
+            <div class="text-muted">{{ field.value }}</div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
 
 <div class="row g-4">
 
     <div class="col-md-6">
         <div class="card p-3 shadow-sm">
-            <h6 class="text-center">Revenue Trend</h6>
+            <h6 class="text-center">{{ trend_chart["title"] }}</h6>
             <div style="height:300px;">
                 <canvas id="lineChart"></canvas>
             </div>
@@ -57,7 +63,7 @@
 
     <div class="col-md-6">
         <div class="card p-3 shadow-sm">
-            <h6 class="text-center">Revenue by Category</h6>
+            <h6 class="text-center">{{ bar_chart["title"] }}</h6>
             <div style="height:300px;">
                 <canvas id="barChart"></canvas>
             </div>
@@ -66,7 +72,7 @@
 
     <div class="col-md-6">
         <div class="card p-3 shadow-sm">
-            <h6 class="text-center">Category Share</h6>
+            <h6 class="text-center">{{ pie_chart["title"] }}</h6>
             <div style="height:300px;">
                 <canvas id="pieChart"></canvas>
             </div>
@@ -75,9 +81,9 @@
 
     <div class="col-md-6">
         <div class="card p-3 shadow-sm">
-            <h6 class="text-center">Order Quantity Distribution</h6>
+            <h6 class="text-center">{{ distribution_chart["title"] }}</h6>
             <div style="height:300px;">
-                <canvas id="histogramChart"></canvas>
+                <canvas id="distributionChart"></canvas>
             </div>
         </div>
     </div>
@@ -87,73 +93,74 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
+    const palette = ['#0d6efd', '#198754', '#dc3545', '#fd7e14', '#6f42c1', '#20c997', '#ffc107', '#6c757d'];
 
     new Chart(document.getElementById('lineChart'), {
         type: 'line',
         data: {
-            labels: {{ chart_labels| tojson }},
-        datasets: [{
-            label: 'Monthly Revenue',
-            data: {{ chart_values| tojson }},
-        borderColor: '#0d6efd',
-        backgroundColor: 'rgba(13,110,253,0.1)',
-        tension: 0.4,
-        fill: true
-        }]
-    },
+            labels: {{ trend_chart["labels"] | tojson }},
+            datasets: [{
+                label: {{ trend_chart["dataset_label"] | tojson }},
+                data: {{ trend_chart["values"] | tojson }},
+                borderColor: '#0d6efd',
+                backgroundColor: 'rgba(13, 110, 253, 0.10)',
+                tension: 0.3,
+                fill: true
+            }]
+        },
         options: {
-        responsive: true,
-        maintainAspectRatio: false
-    }
-});
+            responsive: true,
+            maintainAspectRatio: false
+        }
+    });
 
     new Chart(document.getElementById('barChart'), {
         type: 'bar',
         data: {
-            labels: {{ category_labels| tojson }},
-        datasets: [{
-            label: 'Revenue',
-            data: {{ category_values| tojson }},
-        backgroundColor: '#198754'
-        }]
-    },
+            labels: {{ bar_chart["labels"] | tojson }},
+            datasets: [{
+                label: {{ bar_chart["dataset_label"] | tojson }},
+                data: {{ bar_chart["values"] | tojson }},
+                backgroundColor: '#198754'
+            }]
+        },
         options: {
-        responsive: true,
-        maintainAspectRatio: false
-    }
-});
+            responsive: true,
+            maintainAspectRatio: false
+        }
+    });
 
     new Chart(document.getElementById('pieChart'), {
         type: 'pie',
         data: {
-            labels: {{ category_labels| tojson }},
-        datasets: [{
-            data: {{ category_values| tojson }},
-        backgroundColor: ['#0d6efd', '#198754', '#dc3545', '#ffc107', '#6f42c1']
-        }]
-    },
+            labels: {{ pie_chart["labels"] | tojson }},
+            datasets: [{
+                label: {{ pie_chart["dataset_label"] | tojson }},
+                data: {{ pie_chart["values"] | tojson }},
+                backgroundColor: palette
+            }]
+        },
         options: {
-        responsive: true,
-        maintainAspectRatio: false
-    }
-});
+            responsive: true,
+            maintainAspectRatio: false
+        }
+    });
 
-    new Chart(document.getElementById('histogramChart'), {
+    new Chart(document.getElementById('distributionChart'), {
         type: 'bar',
         data: {
-            labels: {{ quantity_values| tojson }},
-        datasets: [{
-            label: 'Quantity',
-            data: {{ quantity_values| tojson }},
-        backgroundColor: '#fd7e14'
-        }]
-    },
+            labels: {{ distribution_chart["labels"] | tojson }},
+            datasets: [{
+                label: {{ distribution_chart["dataset_label"] | tojson }},
+                data: {{ distribution_chart["values"] | tojson }},
+                backgroundColor: '#fd7e14'
+            }]
+        },
         options: {
-        responsive: true,
-        maintainAspectRatio: false
-    }
-});
-
+            responsive: true,
+            maintainAspectRatio: false
+        }
+    });
 </script>
 
 {% endblock %}
