@@ -1,39 +1,107 @@
 {% extends "base.html" %}
 {% block content %}
 
-<h2 class="mb-1">Welcome, {{ user.username }}</h2>
-<p class="text-muted mb-1">Current dataset: {{ active_dataset_name }}</p>
-<p class="text-muted mb-4">{{ analysis_note }}</p>
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
+    <div>
+        <h2 class="mb-1">Welcome, {{ user.username }}</h2>
+        <p class="text-muted mb-1">Current dataset: {{ active_dataset_name }}</p>
+        <p class="text-muted mb-0">{{ analysis_note }}</p>
+    </div>
 
-<div class="mb-4 d-flex gap-3 flex-wrap">
-    <a href="{{ url_for('main_routes.upload_data') }}" class="btn btn-success">
-        Upload Data
-    </a>
+    <div class="d-flex gap-2 flex-wrap">
+        {% if current_user.has_role('admin') %}
+            <a href="{{ url_for('main_routes.upload_data') }}" class="btn btn-success">Upload Data</a>
 
-    <a href="{{ url_for('main_routes.train_model_route') }}" class="btn btn-warning">
-        Retrain Retail Model
-    </a>
+            <form method="post" action="{{ url_for('main_routes.train_model_route') }}">
+                <button type="submit" class="btn btn-warning">Retrain Retail Model</button>
+            </form>
+        {% endif %}
 
-    <a href="{{ url_for('main_routes.download_report') }}" class="btn btn-primary">
-        Download PDF Report
-    </a>
+        {% if current_user.has_role('admin', 'manager') %}
+            <a href="{{ url_for('main_routes.reports') }}" class="btn btn-primary">Reports</a>
+            <a href="{{ url_for('main_routes.download_report') }}" class="btn btn-outline-primary">Download PDF</a>
+            <a href="{{ url_for('main_routes.export_sales_csv') }}" class="btn btn-outline-success">Export CSV</a>
+        {% endif %}
+    </div>
 </div>
+
+{% if current_user.has_role('manager') and not current_user.has_role('admin') %}
+<div class="alert alert-info mb-4">
+    You are signed in as manager. Reports are available, while dataset upload and model retraining remain admin-only.
+</div>
+{% endif %}
 
 {% if model_info %}
 <div class="alert alert-light border mb-4">
-    Retail model: {{ model_info.best_model_name }} (R2 {{ model_info.best_accuracy }})
-    {% if model_last_trained %}
-    | Last trained: {{ model_last_trained }}
-    {% endif %}
+    <div class="fw-semibold">Active retail model: {{ model_info.best_model_name }}</div>
+    <div class="small text-muted">
+        Linear Regression R2: {{ model_info.lr_accuracy }}
+        |
+        Random Forest R2: {{ model_info.rf_accuracy }}
+        |
+        Best R2: {{ model_info.best_accuracy }}
+        {% if model_last_trained %}
+            | Last trained: {{ model_last_trained }}
+        {% endif %}
+    </div>
 </div>
 {% endif %}
+
+<div class="row g-4 mb-4">
+    {% for card in sales_overview_cards %}
+    <div class="col-lg-3 col-md-4 col-sm-6">
+        <div class="card p-4 shadow-sm h-100">
+            <h6 class="text-muted mb-2">{{ card.label }}</h6>
+            <h3 class="mb-0">{{ card.value }}</h3>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+            <h5 class="mb-0">Live Sales Charts</h5>
+            <span class="text-muted small">Refreshes automatically every {{ (dashboard_refresh_ms / 1000) | int }} seconds</span>
+        </div>
+
+        <div class="row g-4">
+            <div class="col-lg-4">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="text-center">{{ sales_charts["daily"]["title"] }}</h6>
+                    <div style="height: 280px;">
+                        <canvas id="dailySalesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-4">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="text-center">{{ sales_charts["weekly"]["title"] }}</h6>
+                    <div style="height: 280px;">
+                        <canvas id="weeklySalesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-4">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="text-center">{{ sales_charts["monthly"]["title"] }}</h6>
+                    <div style="height: 280px;">
+                        <canvas id="monthlySalesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <div class="row g-4 mb-4">
     {% for card in summary_cards %}
     <div class="col-md-3 col-sm-6">
         <div class="card p-4 shadow-sm h-100">
-            <h6>{{ card.label }}</h6>
-            <h3>{{ card.value }}</h3>
+            <h6 class="text-muted mb-2">{{ card.label }}</h6>
+            <h3 class="mb-0">{{ card.value }}</h3>
         </div>
     </div>
     {% endfor %}
@@ -51,7 +119,6 @@
 </div>
 
 <div class="row g-4">
-
     <div class="col-md-6">
         <div class="card p-3 shadow-sm">
             <h6 class="text-center">{{ trend_chart["title"] }}</h6>
@@ -87,13 +154,75 @@
             </div>
         </div>
     </div>
-
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
     const palette = ['#0d6efd', '#198754', '#dc3545', '#fd7e14', '#6f42c1', '#20c997', '#ffc107', '#6c757d'];
+    const salesChartPayload = {{ sales_charts | tojson }};
+
+    function buildChartConfig(type, payload, color, fillValue) {
+        return {
+            type: type,
+            data: {
+                labels: payload.labels || [],
+                datasets: [{
+                    label: payload.dataset_label || '',
+                    data: payload.values || [],
+                    borderColor: color,
+                    backgroundColor: fillValue || color,
+                    tension: 0.3,
+                    fill: type === 'line'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false
+            }
+        };
+    }
+
+    const dailyChart = new Chart(
+        document.getElementById('dailySalesChart'),
+        buildChartConfig('line', salesChartPayload.daily, '#0d6efd', 'rgba(13, 110, 253, 0.10)')
+    );
+
+    const weeklyChart = new Chart(
+        document.getElementById('weeklySalesChart'),
+        buildChartConfig('bar', salesChartPayload.weekly, '#198754')
+    );
+
+    const monthlyChart = new Chart(
+        document.getElementById('monthlySalesChart'),
+        buildChartConfig('bar', salesChartPayload.monthly, '#fd7e14')
+    );
+
+    function updateChart(chart, payload) {
+        chart.data.labels = payload.labels || [];
+        chart.data.datasets[0].label = payload.dataset_label || '';
+        chart.data.datasets[0].data = payload.values || [];
+        chart.update();
+    }
+
+    async function refreshSalesCharts() {
+        try {
+            const response = await fetch('{{ url_for("main_routes.dashboard_sales_summary") }}', {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+
+            if (!response.ok) {
+                return;
+            }
+
+            const data = await response.json();
+            updateChart(dailyChart, data.daily);
+            updateChart(weeklyChart, data.weekly);
+            updateChart(monthlyChart, data.monthly);
+        } catch (error) {
+            console.error('Failed to refresh dashboard charts.', error);
+        }
+    }
 
     new Chart(document.getElementById('lineChart'), {
         type: 'line',
@@ -161,6 +290,8 @@
             maintainAspectRatio: false
         }
     });
+
+    window.setInterval(refreshSalesCharts, {{ dashboard_refresh_ms }});
 </script>
 
 {% endblock %}

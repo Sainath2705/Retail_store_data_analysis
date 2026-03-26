@@ -25,3 +25,7 @@ saved_models/
 # OS files
 .DS_Store
 Thumbs.db
+
+.env
+*.log
+*.sqlite3

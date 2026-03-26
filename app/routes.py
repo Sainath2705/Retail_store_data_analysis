@@ -3,7 +3,17 @@ from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
-from flask import Blueprint, flash, redirect, render_template, request, send_file, url_for
+from flask import (
+    Blueprint,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 from flask_login import current_user, login_required
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -16,14 +26,21 @@ from app.analytics import (
     load_dataset_analysis,
     save_dataset_analysis,
 )
-from app.ml_model import predict_next_month, train_models
-from app.models import Product, Sale, Store
-from config import Config
+from app.decorators import roles_required
+from app.ml_model import predict_next_month, sync_model_with_sales_data
+from app.models import Product, Sale, Store, User
+from app.utils import (
+    build_retail_analysis_payload,
+    build_report_rows,
+    build_report_summary,
+    build_sales_chart_payload,
+    build_sales_csv_file,
+    build_sales_dataframe,
+    build_sales_overview_cards,
+)
 
 main_routes = Blueprint("main_routes", __name__)
 
-MODEL_INFO_CACHE = None
-MODEL_LAST_TRAINED = None
 MAX_RETAIL_IMPORT_ROWS = 5000
 
 
@@ -53,10 +70,6 @@ def column_match_score(column_name, aliases):
 
 
 def detect_columns(columns):
-    """
-    Auto-detect and map columns to the retail schema when possible.
-    Returns a dict {original_col: required_col} or None if the file is not sales-shaped.
-    """
     mapping = {}
     used_columns = set()
 
@@ -74,7 +87,6 @@ def detect_columns(columns):
 
     for required_column, aliases in possible_names.items():
         ranked_matches = []
-
         for original_column in columns:
             if original_column in used_columns:
                 continue
@@ -94,43 +106,6 @@ def detect_columns(columns):
         return None
 
     return mapping
-
-
-def build_sales_dataframe():
-    sales = Sale.query.all()
-
-    if not sales:
-        return None
-
-    product_map = {
-        product.id: product
-        for product in Product.query.all()
-    }
-    store_map = {
-        store.id: store
-        for store in Store.query.all()
-    }
-
-    rows = []
-    for sale in sales:
-        product = product_map.get(sale.product_id)
-        store = store_map.get(sale.store_id)
-
-        rows.append(
-            {
-                "store_name": store.name if store else "Unknown Store",
-                "city": store.city if store else "Unknown",
-                "state": store.state if store else "Unknown",
-                "product_name": product.name if product else "Unknown Product",
-                "category": product.category if product else "General",
-                "price": product.price if product else 0,
-                "quantity": sale.quantity,
-                "revenue": sale.revenue,
-                "sale_date": sale.sale_date,
-            }
-        )
-
-    return pd.DataFrame(rows)
 
 
 def build_empty_dashboard_payload():
@@ -159,38 +134,31 @@ def build_empty_dashboard_payload():
 
 
 def build_dashboard_payload():
-    payload = load_dataset_analysis()
+    cached_payload = load_dataset_analysis()
+    retail_dataset_name = (
+        cached_payload.get("dataset_name", "Retail Sales Records")
+        if cached_payload
+        else "Retail Sales Records"
+    )
+    retail_payload = build_retail_analysis_payload(retail_dataset_name)
+    if retail_payload:
+        return retail_payload
+
+    payload = cached_payload
     if payload:
         payload.setdefault("summary_cards", [])
+        payload.setdefault("charts", {})
         payload.setdefault("insights", {})
-        if payload.get("retail_compatible"):
-            retail_prediction = predict_next_month()
-            if retail_prediction is not None and payload.get("summary_cards"):
-                payload["summary_cards"][-1] = {
-                    "label": "Next Month Revenue Forecast",
-                    "value": format_display_value(retail_prediction),
-                }
-                current_note = payload["insights"].get("analysis_note", "")
-                payload["insights"]["analysis_note"] = (
-                    current_note + " Retail sales history is also available for next-month forecasting."
-                ).strip()
         return payload
 
     sales_df = build_sales_dataframe()
-    if sales_df is None:
+    if sales_df.empty:
         return build_empty_dashboard_payload()
 
-    payload = analyze_uploaded_dataset(sales_df, "Retail Sales Records")
-    retail_prediction = predict_next_month()
-
-    if retail_prediction is not None and payload["summary_cards"]:
-        payload["summary_cards"][-1] = {
-            "label": "Next Month Revenue Forecast",
-            "value": format_display_value(retail_prediction),
-        }
-        payload["insights"]["analysis_note"] += " Retail sales history is also available for next-month forecasting."
-
-    return payload
+    try:
+        return analyze_uploaded_dataset(sales_df, "Retail Sales Records")
+    except Exception:
+        return build_empty_dashboard_payload()
 
 
 def build_detected_fields(payload):
@@ -199,7 +167,7 @@ def build_detected_fields(payload):
         {"label": "Date Column", "value": insights.get("date_column", "Not detected")},
         {"label": "Metric Column", "value": insights.get("metric_column", "Not detected")},
         {"label": "Grouping Column", "value": insights.get("category_column", "Not detected")},
-        {"label": "Top Segment", "value": insights.get("top_segment", "Not available")},
+        {"label": insights.get("top_segment_label", "Top Segment"), "value": insights.get("top_segment", "Not available")},
     ]
 
 
@@ -233,8 +201,8 @@ def load_uploaded_dataframe(file_path, filename):
     return pd.read_excel(file_path)
 
 
-def import_retail_rows(df):
-    working_df = df.copy()
+def import_retail_rows(dataframe):
+    working_df = dataframe.copy()
 
     if "store_name" not in working_df.columns:
         working_df["store_name"] = "Unknown Store"
@@ -256,12 +224,10 @@ def import_retail_rows(df):
     valid_quantity = working_df["quantity"].replace(0, pd.NA)
     inferred_price = working_df["revenue"] / valid_quantity
     working_df["price"] = working_df["price"].fillna(inferred_price).fillna(0)
-
     working_df["sale_date"] = pd.to_datetime(working_df["sale_date"], errors="coerce")
 
     required_columns = ["store_name", "product_name", "quantity", "revenue", "sale_date"]
     working_df.dropna(subset=required_columns, inplace=True)
-
     if working_df.empty:
         return 0
 
@@ -269,11 +235,9 @@ def import_retail_rows(df):
     product_cache = {product.name: product for product in Product.query.all()}
 
     imported_rows = 0
-
     for _, row in working_df.iterrows():
         store_name = clean_text(row["store_name"], "Unknown Store")
         product_name = clean_text(row["product_name"], "Unknown Product")
-
         if not store_name or not product_name:
             continue
 
@@ -318,47 +282,127 @@ def import_retail_rows(df):
 @login_required
 def dashboard():
     payload = build_dashboard_payload()
+    model_info = sync_model_with_sales_data()
+    sales_overview_cards = build_sales_overview_cards()
+    next_month_prediction = predict_next_month()
+
+    default_chart = {"title": "", "labels": [], "values": [], "dataset_label": ""}
+
+    if next_month_prediction is not None:
+        sales_overview_cards.append(
+            {
+                "label": "Next Month Forecast",
+                "value": format_display_value(next_month_prediction),
+            }
+        )
 
     return render_template(
         "dashboard.html",
         user=current_user,
         active_dataset_name=payload.get("dataset_name", "Uploaded Dataset"),
         summary_cards=payload.get("summary_cards", []),
-        trend_chart=payload.get("charts", {}).get("trend", {}),
-        bar_chart=payload.get("charts", {}).get("breakdown", {}),
-        pie_chart=payload.get("charts", {}).get("composition", {}),
-        distribution_chart=payload.get("charts", {}).get("distribution", {}),
+        trend_chart=payload.get("charts", {}).get("trend", default_chart),
+        bar_chart=payload.get("charts", {}).get("breakdown", default_chart),
+        pie_chart=payload.get("charts", {}).get("composition", default_chart),
+        distribution_chart=payload.get("charts", {}).get("distribution", default_chart),
         analysis_note=payload.get("insights", {}).get("analysis_note", ""),
         detected_fields=build_detected_fields(payload),
-        model_info=MODEL_INFO_CACHE,
-        model_last_trained=MODEL_LAST_TRAINED,
+        model_info=model_info,
+        model_last_trained=model_info.get("trained_at_label") if model_info else None,
+        sales_overview_cards=sales_overview_cards,
+        sales_charts=build_sales_chart_payload(),
+        dashboard_refresh_ms=current_app.config["DASHBOARD_REFRESH_INTERVAL_MS"],
     )
 
 
-@main_routes.route("/upload", methods=["GET", "POST"])
-@login_required
-def upload_data():
-    global MODEL_INFO_CACHE
-    global MODEL_LAST_TRAINED
-
+@main_routes.route("/admin/users", methods=["GET", "POST"])
+@roles_required("admin")
+def manage_users():
     if request.method == "POST":
-        file = request.files["file"]
+        action = (request.form.get("action") or "update_role").strip().lower()
 
+        if action == "create_user":
+            username = (request.form.get("username") or "").strip()
+            email = (request.form.get("email") or "").strip().lower()
+            password = request.form.get("password") or ""
+            selected_role = (request.form.get("role") or "").strip().lower()
+
+            if not username or not email or not password:
+                flash("Username, email, and password are required to create a user.", "danger")
+                return redirect(url_for("main_routes.manage_users"))
+
+            if selected_role not in User.ROLE_CHOICES:
+                flash("Invalid role selected.", "danger")
+                return redirect(url_for("main_routes.manage_users"))
+
+            if User.query.filter_by(username=username).first():
+                flash("That username already exists.", "danger")
+                return redirect(url_for("main_routes.manage_users"))
+
+            if User.query.filter_by(email=email).first():
+                flash("That email already exists.", "danger")
+                return redirect(url_for("main_routes.manage_users"))
+
+            new_user = User(username=username, email=email, role=selected_role)
+            new_user.set_password(password)
+            db.session.add(new_user)
+            db.session.commit()
+            flash(f"Created {selected_role} account for {username}.", "success")
+            return redirect(url_for("main_routes.manage_users"))
+
+        user_id = request.form.get("user_id", type=int)
+        selected_role = (request.form.get("role") or "").strip().lower()
+
+        if selected_role not in User.ROLE_CHOICES:
+            flash("Invalid role selected.", "danger")
+            return redirect(url_for("main_routes.manage_users"))
+
+        user = db.session.get(User, user_id)
+        if user is None:
+            flash("User not found.", "danger")
+            return redirect(url_for("main_routes.manage_users"))
+
+        if user.id == current_user.id and selected_role != User.ROLE_ADMIN:
+            flash("You cannot remove your own admin access from this page.", "warning")
+            return redirect(url_for("main_routes.manage_users"))
+
+        user.role = selected_role
+        db.session.commit()
+        flash(f"Updated role for {user.username} to {selected_role}.", "success")
+        return redirect(url_for("main_routes.manage_users"))
+
+    users = User.query.order_by(User.username.asc()).all()
+    return render_template(
+        "users.html",
+        users=users,
+        available_roles=User.ROLE_CHOICES,
+    )
+
+
+@main_routes.route("/api/dashboard/sales-summary")
+@login_required
+def dashboard_sales_summary():
+    return jsonify(build_sales_chart_payload())
+
+
+@main_routes.route("/upload", methods=["GET", "POST"])
+@roles_required("admin")
+def upload_data():
+    if request.method == "POST":
+        file = request.files.get("file")
         if not file or not file.filename:
             flash("No file selected", "danger")
             return redirect(request.url)
 
-        file_path = os.path.join(Config.UPLOAD_FOLDER, file.filename)
+        file_path = os.path.join(current_app.config["UPLOAD_FOLDER"], file.filename)
         file.save(file_path)
 
         try:
-            df = load_uploaded_dataframe(file_path, file.filename)
-
-            analysis = analyze_uploaded_dataset(df, file.filename)
-            column_mapping = detect_columns(df.columns.tolist())
+            dataframe = load_uploaded_dataframe(file_path, file.filename)
+            analysis = analyze_uploaded_dataset(dataframe, file.filename)
+            column_mapping = detect_columns(dataframe.columns.tolist())
             analysis["retail_compatible"] = False
             save_dataset_analysis(analysis)
-
         except Exception as exc:
             flash(f"Error while reading the file: {str(exc)}", "danger")
             return redirect(request.url)
@@ -368,31 +412,40 @@ def upload_data():
             flash("Retail forecasting was skipped because the file does not look like sales data.", "info")
             return redirect(url_for("main_routes.dashboard"))
 
-        if len(df) > MAX_RETAIL_IMPORT_ROWS:
+        if len(dataframe) > MAX_RETAIL_IMPORT_ROWS:
             flash("Large dataset uploaded successfully. The dashboard is analyzing it directly.", "success")
             flash(
-                f"Retail database import was skipped because the file has {len(df):,} rows. "
-                f"The app keeps dynamic analysis active for large files above {MAX_RETAIL_IMPORT_ROWS:,} rows.",
+                (
+                    f"Retail database import was skipped because the file has {len(dataframe):,} rows. "
+                    f"The app keeps dynamic analysis active for large files above {MAX_RETAIL_IMPORT_ROWS:,} rows."
+                ),
                 "info",
             )
             return redirect(url_for("main_routes.dashboard"))
 
-        retail_df = df.rename(columns=column_mapping).copy()
+        retail_df = dataframe.rename(columns=column_mapping).copy()
 
         try:
             imported_rows = import_retail_rows(retail_df)
-
             if imported_rows > 0:
                 analysis["retail_compatible"] = True
                 save_dataset_analysis(analysis)
-                MODEL_INFO_CACHE = train_models()
-                if MODEL_INFO_CACHE:
-                    MODEL_LAST_TRAINED = datetime.now().strftime("%d %b %Y, %I:%M %p")
+                model_info = sync_model_with_sales_data(force=True)
 
-                flash("Dataset uploaded successfully. Dynamic analysis and retail forecasting are both ready.", "success")
+                flash("Dataset uploaded successfully. Dynamic analysis and retail forecasting are ready.", "success")
+                if model_info:
+                    flash(
+                        (
+                            f"Retail model retrained automatically. "
+                            f"Best model: {model_info['best_model_name']} (R2 {model_info['best_accuracy']})."
+                        ),
+                        "success",
+                    )
             else:
-                flash("Dataset uploaded successfully. Dynamic analysis is ready, but no valid sales rows were available for forecasting.", "warning")
-
+                flash(
+                    "Dataset uploaded successfully. Dynamic analysis is ready, but no valid sales rows were available for forecasting.",
+                    "warning",
+                )
         except Exception as exc:
             db.session.rollback()
             flash("Dataset uploaded successfully and generic analysis is ready.", "success")
@@ -403,35 +456,64 @@ def upload_data():
     return render_template("upload.html")
 
 
-@main_routes.route("/train-model")
-@login_required
+@main_routes.route("/train-model", methods=["GET", "POST"])
+@roles_required("admin")
 def train_model_route():
-    global MODEL_INFO_CACHE
-    global MODEL_LAST_TRAINED
-
-    MODEL_INFO_CACHE = train_models()
-
-    if MODEL_INFO_CACHE:
-        MODEL_LAST_TRAINED = datetime.now().strftime("%d %b %Y, %I:%M %p")
-        flash("Model retrained successfully!", "success")
+    model_info = sync_model_with_sales_data(force=True)
+    if model_info:
+        flash(
+            (
+                f"Model retrained successfully. "
+                f"Best model: {model_info['best_model_name']} (R2 {model_info['best_accuracy']})."
+            ),
+            "success",
+        )
     else:
         flash("Not enough sales data to train the retail forecast model.", "danger")
 
     return redirect(url_for("main_routes.dashboard"))
 
 
+@main_routes.route("/reports")
+@roles_required("admin", "manager")
+def reports():
+    return render_template(
+        "reports.html",
+        report_summary=build_report_summary(),
+        report_rows=build_report_rows(limit=50),
+    )
+
+
+@main_routes.route("/reports/export/csv")
+@roles_required("admin", "manager")
+def export_sales_csv():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(
+        build_sales_csv_file(),
+        as_attachment=True,
+        download_name=f"sales_report_{timestamp}.csv",
+        mimetype="text/csv",
+    )
+
+
 @main_routes.route("/download-report")
-@login_required
+@roles_required("admin", "manager")
 def download_report():
+    report_summary = build_report_summary()
+
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer)
+    document = SimpleDocTemplate(buffer)
     elements = []
     styles = getSampleStyleSheet()
 
     elements.append(Paragraph("<b>Retail Intelligence Dashboard Report</b>", styles["Title"]))
-    elements.append(Spacer(1, 0.5 * inch))
+    elements.append(Spacer(1, 0.4 * inch))
+    elements.append(Paragraph(f"Total sales records: {report_summary['total_sales_display']}", styles["BodyText"]))
+    elements.append(Paragraph(f"Total revenue: {report_summary['total_revenue_display']}", styles["BodyText"]))
+    elements.append(Paragraph(f"Units sold: {report_summary['total_units_display']}", styles["BodyText"]))
+    elements.append(Paragraph(f"Average sale value: {report_summary['average_revenue_display']}", styles["BodyText"]))
 
-    doc.build(elements)
+    document.build(elements)
     buffer.seek(0)
 
     return send_file(
