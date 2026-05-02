@@ -161,15 +161,6 @@ def build_dashboard_payload():
         return build_empty_dashboard_payload()
 
 
-def build_detected_fields(payload):
-    insights = payload.get("insights", {})
-    return [
-        {"label": "Date Column", "value": insights.get("date_column", "Not detected")},
-        {"label": "Metric Column", "value": insights.get("metric_column", "Not detected")},
-        {"label": "Grouping Column", "value": insights.get("category_column", "Not detected")},
-        {"label": insights.get("top_segment_label", "Top Segment"), "value": insights.get("top_segment", "Not available")},
-    ]
-
 
 def clean_text(value, default_value):
     if pd.isna(value):
@@ -306,7 +297,6 @@ def dashboard():
         pie_chart=payload.get("charts", {}).get("composition", default_chart),
         distribution_chart=payload.get("charts", {}).get("distribution", default_chart),
         analysis_note=payload.get("insights", {}).get("analysis_note", ""),
-        detected_fields=build_detected_fields(payload),
         model_info=model_info,
         model_last_trained=model_info.get("trained_at_label") if model_info else None,
         sales_overview_cards=sales_overview_cards,
