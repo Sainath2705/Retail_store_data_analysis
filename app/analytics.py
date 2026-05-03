@@ -6,7 +6,7 @@ from typing import Optional
 import pandas as pd
 from flask import current_app
 
-ANALYSIS_CACHE_VERSION = 2
+ANALYSIS_CACHE_VERSION = 3
 
 DATE_ALIAS_WEIGHTS = (
     (120, ["order date", "sale date", "transaction date", "invoice date"]),
@@ -45,6 +45,32 @@ IDENTIFIER_PHRASES = {
 IDENTIFIER_TOKENS = {"id", "identifier", "code", "postal", "zip", "zipcode", "index"}
 
 UPLOAD_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+
+DATE_PARSE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%d-%m-%Y",
+    "%d-%m-%Y %H:%M:%S",
+    "%d/%m/%Y",
+    "%d/%m/%Y %H:%M:%S",
+    "%m/%d/%Y",
+    "%m/%d/%Y %H:%M:%S",
+)
+
+RETAIL_COLUMN_ALIASES = {
+    "date": ["transaction_date", "transaction date", "sale_date", "sale date", "order_date", "order date", "date"],
+    "sales": ["sales_amount", "sales amount", "revenue", "sales", "amount", "total_sales", "total sales"],
+    "quantity": ["quantity", "qty", "units", "units sold"],
+    "category": ["category", "product category", "department"],
+    "product": ["product_name", "product name", "product", "item", "item name"],
+    "segment": ["customer_segment", "customer segment", "segment"],
+    "age_group": ["customer_age_group", "customer age group", "age_group", "age group", "age"],
+    "region": ["region", "state", "city", "market"],
+    "channel": ["sales_channel", "sales channel", "channel"],
+}
 
 
 def format_display_value(value):
@@ -93,6 +119,34 @@ def _alias_score(column_name, weighted_aliases):
     return best_score
 
 
+def _find_column(columns, aliases):
+    ranked_matches = []
+    for column in columns:
+        normalized_column = _normalize(column)
+        column_tokens = _tokenize(column)
+
+        for alias in aliases:
+            normalized_alias = _normalize(alias)
+            alias_tokens = _tokenize(alias)
+
+            score = 0
+            if normalized_column == normalized_alias:
+                score = 100
+            elif normalized_alias in normalized_column or normalized_column in normalized_alias:
+                score = 80
+            elif alias_tokens and alias_tokens.issubset(column_tokens):
+                score = 60
+
+            if score:
+                ranked_matches.append((score, len(str(column)), column))
+
+    if not ranked_matches:
+        return None
+
+    ranked_matches.sort(reverse=True)
+    return ranked_matches[0][2]
+
+
 def _is_identifier_column(column_name, series):
     normalized_name = _normalize(column_name)
     tokens = _tokenize(column_name)
@@ -135,7 +189,29 @@ def _parse_dates(series):
     if sample.empty:
         return pd.to_datetime(series, errors="coerce")
 
-    parsed = pd.to_datetime(series, errors="coerce")
+    if pd.api.types.is_numeric_dtype(sample):
+        return pd.to_datetime(series, errors="coerce")
+
+    cleaned = series.astype("string").str.strip()
+    cleaned = cleaned.mask(cleaned == "")
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+
+    for date_format in DATE_PARSE_FORMATS:
+        remaining = parsed.isna() & cleaned.notna()
+        if not remaining.any():
+            break
+
+        formatted = pd.to_datetime(cleaned[remaining], format=date_format, errors="coerce")
+        parsed.loc[remaining] = formatted
+
+    remaining = parsed.isna() & cleaned.notna()
+    if remaining.any():
+        try:
+            mixed = pd.to_datetime(cleaned[remaining], format="mixed", errors="coerce")
+            parsed.loc[remaining] = mixed
+        except (TypeError, ValueError):
+            pass
+
     return parsed
 
 
@@ -261,7 +337,7 @@ def _build_trend_chart(dataframe, date_column, metric_column):
 
     date_range_days = (working[date_column].max() - working[date_column].min()).days if len(working) > 1 else 0
     if date_range_days > 90 or working[date_column].nunique() > 45:
-        frequency = "M"
+        frequency = "ME"
         label_format = "%b %Y"
     else:
         frequency = "D"
@@ -358,6 +434,239 @@ def _build_summary_cards(dataframe, metric_column):
     return summary_cards
 
 
+def _build_named_chart(title, dataset_label, labels, values, description=""):
+    return {
+        "title": title,
+        "dataset_label": dataset_label,
+        "labels": labels,
+        "values": values,
+        "description": description,
+    }
+
+
+def _build_insight_card(label, value, helper_text=""):
+    return {
+        "label": label,
+        "value": value,
+        "helper_text": helper_text,
+    }
+
+
+def _build_uploaded_retail_payload(dataframe, dataset_name):
+    columns = dataframe.columns.tolist()
+    date_column = _find_column(columns, RETAIL_COLUMN_ALIASES["date"])
+    sales_column = _find_column(columns, RETAIL_COLUMN_ALIASES["sales"])
+
+    if not date_column or not sales_column:
+        return None
+
+    working = dataframe.copy()
+    working[date_column] = _parse_dates(working[date_column])
+    working[sales_column] = _coerce_numeric(working[sales_column])
+    working.dropna(subset=[date_column, sales_column], inplace=True)
+    if working.empty:
+        return None
+
+    quantity_column = _find_column(columns, RETAIL_COLUMN_ALIASES["quantity"])
+    category_column = _find_column(columns, RETAIL_COLUMN_ALIASES["category"])
+    product_column = _find_column(columns, RETAIL_COLUMN_ALIASES["product"])
+    segment_column = _find_column(columns, RETAIL_COLUMN_ALIASES["segment"])
+    age_group_column = _find_column(columns, RETAIL_COLUMN_ALIASES["age_group"])
+    region_column = _find_column(columns, RETAIL_COLUMN_ALIASES["region"])
+    channel_column = _find_column(columns, RETAIL_COLUMN_ALIASES["channel"])
+
+    total_sales = float(working[sales_column].sum())
+    transaction_count = int(len(working))
+    average_order_value = total_sales / transaction_count if transaction_count else 0
+    total_units = None
+    if quantity_column:
+        working[quantity_column] = _coerce_numeric(working[quantity_column])
+        total_units = int(working[quantity_column].dropna().sum())
+
+    date_range_days = (working[date_column].max() - working[date_column].min()).days if len(working) > 1 else 0
+    trend_frequency = "ME" if date_range_days > 90 else "D"
+    trend_label_format = "%b %Y" if trend_frequency == "ME" else "%d %b"
+    sales_trend = (
+        working.set_index(date_column)
+        .resample(trend_frequency)[sales_column]
+        .sum()
+        .tail(12)
+    )
+
+    if category_column:
+        category_sales = (
+            working.groupby(category_column)[sales_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(8)
+        )
+        breakdown_title = "Sales by Product Category"
+        breakdown_description = f"Groups total {sales_column} by {category_column} to show which categories drive revenue."
+    elif region_column:
+        category_sales = (
+            working.groupby(region_column)[sales_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(8)
+        )
+        breakdown_title = "Sales by Region"
+        breakdown_description = f"Groups total {sales_column} by {region_column} to show where sales come from."
+    else:
+        category_sales = pd.Series(dtype="float64")
+        breakdown_title = "Sales Breakdown"
+        breakdown_description = "No category or region column was detected for this breakdown."
+
+    if product_column:
+        top_products = (
+            working.groupby(product_column)[sales_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(8)
+        )
+        distribution_title = "Top Products by Revenue"
+        distribution_label = "Revenue"
+        distribution_description = f"Ranks products by total {sales_column}, so the tallest bars are the biggest revenue contributors."
+    elif quantity_column and (category_column or segment_column or region_column):
+        top_products = (
+            working.groupby(category_column or segment_column or region_column)[quantity_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(8)
+        )
+        distribution_title = "Top Groups by Units Sold"
+        distribution_label = "Units Sold"
+        distribution_description = f"Ranks groups by total {quantity_column}."
+    else:
+        top_products = pd.Series(dtype="float64")
+        distribution_title = "Top Products"
+        distribution_label = "Revenue"
+        distribution_description = "No product or quantity column was detected."
+
+    if age_group_column:
+        composition = (
+            working.groupby(age_group_column)[sales_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(6)
+        )
+        composition_title = "Customer Age Group Sales Share"
+        composition_description = f"Compares total {sales_column} across {age_group_column} values to show which age groups drive sales."
+        composition_source = age_group_column
+    elif segment_column:
+        composition = (
+            working.groupby(segment_column)[sales_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(6)
+        )
+        composition_title = "Customer Segment Sales Share"
+        composition_description = f"Compares total {sales_column} across {segment_column} values like Loyal, New, VIP, and Returning."
+        composition_source = segment_column
+    elif channel_column:
+        composition = (
+            working.groupby(channel_column)[sales_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(6)
+        )
+        composition_title = "Sales Channel Share"
+        composition_description = f"Compares total {sales_column} by {channel_column}, such as Online and In-Store."
+        composition_source = channel_column
+    else:
+        composition = pd.Series(dtype="float64")
+        composition_title = "Sales Share"
+        composition_description = "No customer segment or sales channel column was detected."
+        composition_source = None
+
+    top_segment = str(category_sales.index[0]) if not category_sales.empty else "Not available"
+    trend_basis = "monthly" if trend_frequency == "ME" else "daily"
+    best_month = sales_trend.idxmax().strftime(trend_label_format) if not sales_trend.empty else "Not available"
+    best_month_value = float(sales_trend.max()) if not sales_trend.empty else None
+    best_product = str(top_products.index[0]) if not top_products.empty else "Not available"
+    best_product_value = float(top_products.iloc[0]) if not top_products.empty else None
+    top_age_group = str(composition.index[0]) if not composition.empty else "Not available"
+    top_age_group_value = float(composition.iloc[0]) if not composition.empty else None
+    insight_cards = [
+        _build_insight_card(
+            "Top Category",
+            top_segment,
+            f"{format_display_value(float(category_sales.iloc[0]))} sales" if not category_sales.empty else "",
+        ),
+        _build_insight_card(
+            "Best Product",
+            best_product,
+            f"{format_display_value(best_product_value)} sales" if best_product_value is not None else "",
+        ),
+        _build_insight_card(
+            "Best Sales Month",
+            best_month,
+            f"{format_display_value(best_month_value)} sales" if best_month_value is not None else "",
+        ),
+        _build_insight_card(
+            "Top Age Group",
+            top_age_group,
+            f"{format_display_value(top_age_group_value)} sales" if top_age_group_value is not None else "",
+        ),
+    ]
+
+    return _serialize_payload(
+        {
+            "analysis_version": ANALYSIS_CACHE_VERSION,
+            "analysis_source": "uploaded_retail_dataset",
+            "dataset_name": dataset_name,
+            "summary_cards": [
+                {"label": "Total Sales", "value": format_display_value(total_sales)},
+                {"label": "Transactions", "value": format_display_value(transaction_count)},
+                {"label": "Units Sold", "value": format_display_value(total_units) if total_units is not None else "Not detected"},
+                {"label": "Average Order Value", "value": format_display_value(average_order_value)},
+            ],
+            "insight_cards": insight_cards,
+            "charts": {
+                "trend": _build_named_chart(
+                    "Sales Trend Over Time",
+                    "Sales Amount",
+                    [index.strftime(trend_label_format) for index in sales_trend.index],
+                    [round(float(value), 2) for value in sales_trend.tolist()],
+                    f"Sums {sales_column} by {trend_basis} periods using {date_column}.",
+                ),
+                "breakdown": _build_named_chart(
+                    breakdown_title,
+                    "Sales Amount",
+                    [str(index) for index in category_sales.index.tolist()],
+                    [round(float(value), 2) for value in category_sales.tolist()],
+                    breakdown_description,
+                ),
+                "composition": _build_named_chart(
+                    composition_title,
+                    "Sales Amount",
+                    [str(index) for index in composition.index.tolist()],
+                    [round(float(value), 2) for value in composition.tolist()],
+                    composition_description,
+                ),
+                "distribution": _build_named_chart(
+                    distribution_title,
+                    distribution_label,
+                    [str(index) for index in top_products.index.tolist()],
+                    [round(float(value), 2) for value in top_products.tolist()],
+                    distribution_description,
+                ),
+            },
+            "insights": {
+                "analysis_note": (
+                    f"Retail analysis is based on {sales_column} as sales, {date_column} as transaction date, "
+                    f"{category_column or region_column or 'detected groups'} for breakdowns, "
+                    f"and {composition_source or 'available customer groups'} for share analysis."
+                ),
+                "date_column": date_column,
+                "metric_column": sales_column,
+                "category_column": category_column or region_column or "Not detected",
+                "top_segment": top_segment,
+            },
+            "retail_compatible": False,
+        }
+    )
+
+
 def _calculate_top_group(dataframe, group_column, metric_column):
     if not group_column:
         return "Not available"
@@ -411,6 +720,10 @@ def analyze_uploaded_dataset(dataframe, dataset_name):
     working = dataframe.copy()
     working.columns = [str(column).strip() for column in working.columns]
 
+    retail_payload = _build_uploaded_retail_payload(working, dataset_name)
+    if retail_payload:
+        return retail_payload
+
     date_column = _detect_date_column(working)
     metric_column = _detect_metric_column(working, excluded_columns={date_column} if date_column else set())
     grouping_column = _detect_grouping_column(
@@ -420,6 +733,7 @@ def analyze_uploaded_dataset(dataframe, dataset_name):
 
     payload = {
         "analysis_version": ANALYSIS_CACHE_VERSION,
+        "analysis_source": "uploaded_dataset",
         "dataset_name": dataset_name,
         "summary_cards": _build_summary_cards(working, metric_column),
         "charts": {

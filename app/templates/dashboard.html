@@ -1,6 +1,62 @@
 {% extends "base.html" %}
 {% block content %}
 
+<style>
+    @keyframes dashboardFadeUp {
+        from {
+            opacity: 0;
+            transform: translateY(18px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .dashboard-reveal {
+        animation: dashboardFadeUp 0.65s ease both;
+    }
+
+    .dashboard-reveal:nth-child(1) {
+        animation-delay: 0.04s;
+    }
+
+    .dashboard-reveal:nth-child(2) {
+        animation-delay: 0.10s;
+    }
+
+    .dashboard-reveal:nth-child(3) {
+        animation-delay: 0.16s;
+    }
+
+    .dashboard-reveal:nth-child(4) {
+        animation-delay: 0.22s;
+    }
+
+    .chart-card {
+        transition: transform 0.25s ease, box-shadow 0.25s ease;
+    }
+
+    .chart-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 0.8rem 1.6rem rgba(15, 23, 42, 0.12) !important;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .dashboard-reveal {
+            animation: none;
+        }
+
+        .chart-card {
+            transition: none;
+        }
+
+        .chart-card:hover {
+            transform: none;
+        }
+    }
+</style>
+
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
     <div>
         <h2 class="mb-1">Welcome, {{ user.username }}</h2>
@@ -14,6 +70,10 @@
 
             <form method="post" action="{{ url_for('main_routes.train_model_route') }}">
                 <button type="submit" class="btn btn-warning">Retrain Retail Model</button>
+            </form>
+
+            <form method="post" action="{{ url_for('main_routes.delete_data') }}" onsubmit="return confirm('Delete all uploaded files, imported sales data, and saved models?');">
+                <button type="submit" class="btn btn-outline-danger">Delete Data</button>
             </form>
         {% endif %}
 
@@ -44,49 +104,73 @@
             | Last trained: {{ model_last_trained }}
         {% endif %}
     </div>
+    {% if model_info.feature_summary %}
+    <div class="small text-muted mt-2">
+        Feature set: {{ model_info.feature_summary }}
+    </div>
+    {% endif %}
 </div>
 {% endif %}
 
-<div class="row g-4 mb-4">
-    {% for card in sales_overview_cards %}
-    <div class="col-lg-3 col-md-4 col-sm-6">
-        <div class="card p-4 shadow-sm h-100">
-            <h6 class="text-muted mb-2">{{ card.label }}</h6>
-            <h3 class="mb-0">{{ card.value }}</h3>
+{% if analysis_source != 'uploaded_retail_dataset' %}
+    <div class="row g-4 mb-4">
+        {% for card in sales_overview_cards %}
+        <div class="col-lg-3 col-md-4 col-sm-6 dashboard-reveal">
+            <div class="card p-4 shadow-sm h-100 chart-card">
+                <h6 class="text-muted mb-2">{{ card.label }}</h6>
+                <h3 class="mb-0">{{ card.value }}</h3>
+            </div>
         </div>
+        {% endfor %}
     </div>
-    {% endfor %}
-</div>
+{% endif %}
 
+{% if analysis_source != 'uploaded_retail_dataset' %}
 <div class="card shadow-sm mb-4">
     <div class="card-body">
         <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
-            <h5 class="mb-0">Live Sales Charts</h5>
-            <span class="text-muted small">Refreshes automatically every {{ (dashboard_refresh_ms / 1000) | int }} seconds</span>
+            <div>
+                <h5 class="mb-0" aria-label="Live Sales Charts">Retail Performance Charts</h5>
+                {% if not live_charts_are_sales %}
+                    <div class="text-muted small">Showing direct analysis from the uploaded CSV because this large file was not imported into database rows.</div>
+                {% endif %}
+            </div>
+            {% if live_charts_are_sales %}
+                <span class="text-muted small">Refreshes automatically every {{ (dashboard_refresh_ms / 1000) | int }} seconds</span>
+            {% endif %}
         </div>
 
         <div class="row g-4">
-            <div class="col-lg-4">
-                <div class="border rounded p-3 h-100">
-                    <h6 class="text-center">{{ sales_charts["daily"]["title"] }}</h6>
+            <div class="col-lg-4 dashboard-reveal">
+                <div class="border rounded p-3 h-100 chart-card">
+                    <h6 class="text-center mb-1">{{ sales_charts["daily"]["title"] }}</h6>
+                    {% if sales_charts["daily"]["description"] %}
+                        <p class="text-muted small text-center mb-2">{{ sales_charts["daily"]["description"] }}</p>
+                    {% endif %}
                     <div style="height: 280px;">
                         <canvas id="dailySalesChart"></canvas>
                     </div>
                 </div>
             </div>
 
-            <div class="col-lg-4">
-                <div class="border rounded p-3 h-100">
-                    <h6 class="text-center">{{ sales_charts["weekly"]["title"] }}</h6>
+            <div class="col-lg-4 dashboard-reveal">
+                <div class="border rounded p-3 h-100 chart-card">
+                    <h6 class="text-center mb-1">{{ sales_charts["weekly"]["title"] }}</h6>
+                    {% if sales_charts["weekly"]["description"] %}
+                        <p class="text-muted small text-center mb-2">{{ sales_charts["weekly"]["description"] }}</p>
+                    {% endif %}
                     <div style="height: 280px;">
                         <canvas id="weeklySalesChart"></canvas>
                     </div>
                 </div>
             </div>
 
-            <div class="col-lg-4">
-                <div class="border rounded p-3 h-100">
-                    <h6 class="text-center">{{ sales_charts["monthly"]["title"] }}</h6>
+            <div class="col-lg-4 dashboard-reveal">
+                <div class="border rounded p-3 h-100 chart-card">
+                    <h6 class="text-center mb-1">{{ sales_charts["monthly"]["title"] }}</h6>
+                    {% if sales_charts["monthly"]["description"] %}
+                        <p class="text-muted small text-center mb-2">{{ sales_charts["monthly"]["description"] }}</p>
+                    {% endif %}
                     <div style="height: 280px;">
                         <canvas id="monthlySalesChart"></canvas>
                     </div>
@@ -95,11 +179,32 @@
         </div>
     </div>
 </div>
+{% endif %}
+
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div>
+        <h5 class="mb-1">
+            {% if analysis_source == 'retail_database' %}
+                Imported Retail Analysis
+            {% else %}
+                Uploaded Dataset Analysis
+            {% endif %}
+            <span class="visually-hidden">Live Sales Charts</span>
+        </h5>
+        <p class="text-muted mb-0 small">
+            {% if analysis_source == 'retail_database' %}
+                These four cards and charts are built from the imported sales records stored in the app database.
+            {% else %}
+                These cards and charts are built from the currently uploaded dataset: {{ active_dataset_name }}.
+            {% endif %}
+        </p>
+    </div>
+</div>
 
 <div class="row g-4 mb-4">
     {% for card in summary_cards %}
-    <div class="col-md-3 col-sm-6">
-        <div class="card p-4 shadow-sm h-100">
+    <div class="col-md-3 col-sm-6 dashboard-reveal">
+        <div class="card p-4 shadow-sm h-100 chart-card">
             <h6 class="text-muted mb-2">{{ card.label }}</h6>
             <h3 class="mb-0">{{ card.value }}</h3>
         </div>
@@ -108,36 +213,48 @@
 </div>
 
 <div class="row g-4">
-    <div class="col-md-6">
-        <div class="card p-3 shadow-sm">
-            <h6 class="text-center">{{ trend_chart["title"] }}</h6>
+    <div class="col-md-6 dashboard-reveal">
+        <div class="card p-3 shadow-sm chart-card">
+            <h6 class="text-center mb-1">{{ trend_chart["title"] }}</h6>
+            {% if trend_chart["description"] %}
+                <p class="text-muted small text-center mb-2">{{ trend_chart["description"] }}</p>
+            {% endif %}
             <div style="height:300px;">
                 <canvas id="lineChart"></canvas>
             </div>
         </div>
     </div>
 
-    <div class="col-md-6">
-        <div class="card p-3 shadow-sm">
-            <h6 class="text-center">{{ bar_chart["title"] }}</h6>
+    <div class="col-md-6 dashboard-reveal">
+        <div class="card p-3 shadow-sm chart-card">
+            <h6 class="text-center mb-1">{{ bar_chart["title"] }}</h6>
+            {% if bar_chart["description"] %}
+                <p class="text-muted small text-center mb-2">{{ bar_chart["description"] }}</p>
+            {% endif %}
             <div style="height:300px;">
                 <canvas id="barChart"></canvas>
             </div>
         </div>
     </div>
 
-    <div class="col-md-6">
-        <div class="card p-3 shadow-sm">
-            <h6 class="text-center">{{ pie_chart["title"] }}</h6>
+    <div class="col-md-6 dashboard-reveal">
+        <div class="card p-3 shadow-sm chart-card">
+            <h6 class="text-center mb-1">{{ pie_chart["title"] }}</h6>
+            {% if pie_chart["description"] %}
+                <p class="text-muted small text-center mb-2">{{ pie_chart["description"] }}</p>
+            {% endif %}
             <div style="height:300px;">
                 <canvas id="pieChart"></canvas>
             </div>
         </div>
     </div>
 
-    <div class="col-md-6">
-        <div class="card p-3 shadow-sm">
-            <h6 class="text-center">{{ distribution_chart["title"] }}</h6>
+    <div class="col-md-6 dashboard-reveal">
+        <div class="card p-3 shadow-sm chart-card">
+            <h6 class="text-center mb-1">{{ distribution_chart["title"] }}</h6>
+            {% if distribution_chart["description"] %}
+                <p class="text-muted small text-center mb-2">{{ distribution_chart["description"] }}</p>
+            {% endif %}
             <div style="height:300px;">
                 <canvas id="distributionChart"></canvas>
             </div>
@@ -145,10 +262,80 @@
     </div>
 </div>
 
+{% if insight_cards %}
+<div class="mt-4 mb-5">
+    <h5 class="mb-3">Key Sales Insights</h5>
+    <div class="row g-4">
+        {% for card in insight_cards %}
+        <div class="col-lg-3 col-md-4 col-sm-6 dashboard-reveal">
+            <div class="card p-4 shadow-sm h-100 border-success chart-card">
+                <h6 class="text-muted mb-2">{{ card.label }}</h6>
+                <h3 class="mb-1">{{ card.value }}</h3>
+                {% if card.helper_text %}
+                    <div class="small text-muted">{{ card.helper_text }}</div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
     const palette = ['#0d6efd', '#198754', '#dc3545', '#fd7e14', '#6f42c1', '#20c997', '#ffc107', '#6c757d'];
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function chartAnimationOptions(type) {
+        if (prefersReducedMotion) {
+            return {
+                animation: false,
+                transitions: {
+                    active: {
+                        animation: {
+                            duration: 0
+                        }
+                    }
+                }
+            };
+        }
+
+        const baseAnimation = {
+            duration: type === 'pie' ? 1100 : 1250,
+            easing: type === 'line' ? 'easeInOutQuart' : 'easeOutQuart'
+        };
+
+        if (type === 'line') {
+            return {
+                animation: {
+                    ...baseAnimation,
+                    delay: (context) => context.type === 'data' ? context.dataIndex * 45 : 0
+                },
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                }
+            };
+        }
+
+        return {
+            animation: {
+                ...baseAnimation,
+                delay: (context) => context.type === 'data' ? context.dataIndex * 70 : 0
+            }
+        };
+    }
+
+    function chartOptions(type) {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            ...chartAnimationOptions(type)
+        };
+    }
+
+    {% if analysis_source != 'uploaded_retail_dataset' %}
     const salesChartPayload = {{ sales_charts | tojson }};
 
     function buildChartConfig(type, payload, color, fillValue) {
@@ -165,10 +352,7 @@
                     fill: type === 'line'
                 }]
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false
-            }
+            options: chartOptions(type)
         };
     }
 
@@ -212,6 +396,7 @@
             console.error('Failed to refresh dashboard charts.', error);
         }
     }
+    {% endif %}
 
     new Chart(document.getElementById('lineChart'), {
         type: 'line',
@@ -226,10 +411,7 @@
                 fill: true
             }]
         },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false
-        }
+        options: chartOptions('line')
     });
 
     new Chart(document.getElementById('barChart'), {
@@ -242,10 +424,7 @@
                 backgroundColor: '#198754'
             }]
         },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false
-        }
+        options: chartOptions('bar')
     });
 
     new Chart(document.getElementById('pieChart'), {
@@ -258,10 +437,7 @@
                 backgroundColor: palette
             }]
         },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false
-        }
+        options: chartOptions('pie')
     });
 
     new Chart(document.getElementById('distributionChart'), {
@@ -274,13 +450,12 @@
                 backgroundColor: '#fd7e14'
             }]
         },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false
-        }
+        options: chartOptions('bar')
     });
 
-    window.setInterval(refreshSalesCharts, {{ dashboard_refresh_ms }});
+    {% if analysis_source != 'uploaded_retail_dataset' and live_charts_are_sales %}
+        window.setInterval(refreshSalesCharts, {{ dashboard_refresh_ms }});
+    {% endif %}
 </script>
 
 {% endblock %}

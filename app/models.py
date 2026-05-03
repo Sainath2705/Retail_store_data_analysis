@@ -26,8 +26,6 @@ class User(db.Model, UserMixin):
     @property
     def normalized_role(self):
         value = (self.role or self.ROLE_MANAGER).strip().lower()
-        if value not in {self.ROLE_ADMIN, self.ROLE_MANAGER}:
-            return self.ROLE_MANAGER
         return value
 
     def has_role(self, *roles):
@@ -57,11 +55,13 @@ class Product(db.Model):
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     store_id = db.Column(db.Integer, db.ForeignKey("store.id"))
     product_id = db.Column(db.Integer, db.ForeignKey("product.id"))
     quantity = db.Column(db.Integer)
     revenue = db.Column(db.Float)
     sale_date = db.Column(db.DateTime, default=datetime.utcnow)
 
+    user = db.relationship("User", backref=db.backref("sales", lazy=True))
     store = db.relationship("Store", backref=db.backref("sales", lazy=True))
     product = db.relationship("Product", backref=db.backref("sales", lazy=True))

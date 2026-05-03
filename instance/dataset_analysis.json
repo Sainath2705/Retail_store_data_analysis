@@ -1,0 +1,157 @@
+{
+  "analysis_version": 3,
+  "analysis_source": "uploaded_retail_dataset",
+  "dataset_name": "retail_sales_dataset1.csv",
+  "summary_cards": [
+    {
+      "label": "Total Sales",
+      "value": "45,357,054.45"
+    },
+    {
+      "label": "Transactions",
+      "value": "120,000"
+    },
+    {
+      "label": "Units Sold",
+      "value": "199,549"
+    },
+    {
+      "label": "Average Order Value",
+      "value": "377.98"
+    }
+  ],
+  "insight_cards": [
+    {
+      "label": "Top Category",
+      "value": "Beauty",
+      "helper_text": "6,355,718.23 sales"
+    },
+    {
+      "label": "Best Product",
+      "value": "Bread",
+      "helper_text": "2,073,770.79 sales"
+    },
+    {
+      "label": "Best Sales Month",
+      "value": "Jul 2025",
+      "helper_text": "2,007,036.02 sales"
+    },
+    {
+      "label": "Top Age Group",
+      "value": "35-44",
+      "helper_text": "9,170,231.38 sales"
+    }
+  ],
+  "charts": {
+    "trend": {
+      "title": "Sales Trend Over Time",
+      "dataset_label": "Sales Amount",
+      "labels": [
+        "Jan 2025",
+        "Feb 2025",
+        "Mar 2025",
+        "Apr 2025",
+        "May 2025",
+        "Jun 2025",
+        "Jul 2025",
+        "Aug 2025",
+        "Sep 2025",
+        "Oct 2025",
+        "Nov 2025",
+        "Dec 2025"
+      ],
+      "values": [
+        1925284.04,
+        1793455.91,
+        1813051.32,
+        1862967.35,
+        1921171.94,
+        1838634.83,
+        2007036.02,
+        1967685.22,
+        1836361.3,
+        1949976.97,
+        1783231.12,
+        1871794.42
+      ],
+      "description": "Sums sales_amount by monthly periods using transaction_date."
+    },
+    "breakdown": {
+      "title": "Sales by Product Category",
+      "dataset_label": "Sales Amount",
+      "labels": [
+        "Beauty",
+        "Books",
+        "Sports",
+        "Electronics",
+        "Home",
+        "Toys",
+        "Groceries",
+        "Clothing"
+      ],
+      "values": [
+        6355718.23,
+        6005237.69,
+        5863370.76,
+        5859686.69,
+        5655562.8,
+        5557562.19,
+        5431536.64,
+        4628379.45
+      ],
+      "description": "Groups total sales_amount by category to show which categories drive revenue."
+    },
+    "composition": {
+      "title": "Customer Age Group Sales Share",
+      "dataset_label": "Sales Amount",
+      "labels": [
+        "35-44",
+        "45-54",
+        "55+",
+        "25-34",
+        "18-24"
+      ],
+      "values": [
+        9170231.38,
+        9091969.39,
+        9085526.85,
+        9039895.91,
+        8969430.92
+      ],
+      "description": "Compares total sales_amount across customer_age_group values to show which age groups drive sales."
+    },
+    "distribution": {
+      "title": "Top Products by Revenue",
+      "dataset_label": "Revenue",
+      "labels": [
+        "Bread",
+        "Lipstick",
+        "Textbook",
+        "Smartphone",
+        "Water Bottle",
+        "Storage Box",
+        "Notebook",
+        "Toy Car"
+      ],
+      "values": [
+        2073770.79,
+        2063017.35,
+        1737817.74,
+        1631875.41,
+        1605400.95,
+        1509331.33,
+        1478248.61,
+        1423744.56
+      ],
+      "description": "Ranks products by total sales_amount, so the tallest bars are the biggest revenue contributors."
+    }
+  },
+  "insights": {
+    "analysis_note": "Retail analysis is based on sales_amount as sales, transaction_date as transaction date, category for breakdowns, and customer_age_group for share analysis.",
+    "date_column": "transaction_date",
+    "metric_column": "sales_amount",
+    "category_column": "category",
+    "top_segment": "Beauty"
+  },
+  "retail_compatible": false
+}

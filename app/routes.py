@@ -27,7 +27,12 @@ from app.analytics import (
     save_dataset_analysis,
 )
 from app.decorators import roles_required
-from app.ml_model import predict_next_month, sync_model_with_sales_data
+from app.ai_insights import ask_question, generate_auto_summary
+from app.ml_model import (
+    predict_next_month,
+    predict_next_month_from_uploaded_dataset,
+    sync_model_with_sales_data,
+)
 from app.models import Product, Sale, Store, User
 from app.utils import (
     build_retail_analysis_payload,
@@ -110,6 +115,7 @@ def detect_columns(columns):
 
 def build_empty_dashboard_payload():
     return {
+        "analysis_source": "uploaded_dataset",
         "dataset_name": "No dataset uploaded yet",
         "summary_cards": [
             {"label": "Records", "value": "0"},
@@ -117,6 +123,7 @@ def build_empty_dashboard_payload():
             {"label": "Columns", "value": "0"},
             {"label": "Missing Cells", "value": "0"},
         ],
+        "insight_cards": [],
         "charts": {
             "trend": {"title": "Dataset Trend", "labels": [], "values": [], "dataset_label": ""},
             "breakdown": {"title": "Category Breakdown", "labels": [], "values": [], "dataset_label": ""},
@@ -133,25 +140,79 @@ def build_empty_dashboard_payload():
     }
 
 
-def build_dashboard_payload():
+def _chart_has_data(chart):
+    return bool(chart and chart.get("labels") and chart.get("values"))
+
+
+def _live_chart_from_uploaded_chart(chart, fallback_title, fallback_label):
+    chart = chart or {}
+    return {
+        "title": chart.get("title") or fallback_title,
+        "labels": chart.get("labels") or [],
+        "values": chart.get("values") or [],
+        "dataset_label": chart.get("dataset_label") or fallback_label,
+        "description": chart.get("description") or "",
+    }
+
+
+def build_live_sales_chart_payload(dataframe=None, user_id=None, dashboard_payload=None):
+    sales_payload = build_sales_chart_payload(dataframe=dataframe, user_id=user_id)
+    if any(_chart_has_data(chart) for chart in sales_payload.values()):
+        return sales_payload
+
+    dashboard_payload = dashboard_payload or load_dataset_analysis()
+    uploaded_charts = (dashboard_payload or {}).get("charts", {})
+    fallback_payload = {
+        "daily": _live_chart_from_uploaded_chart(
+            uploaded_charts.get("trend"),
+            "Uploaded Dataset Trend",
+            "Trend",
+        ),
+        "weekly": _live_chart_from_uploaded_chart(
+            uploaded_charts.get("breakdown"),
+            "Uploaded Dataset Breakdown",
+            "Breakdown",
+        ),
+        "monthly": _live_chart_from_uploaded_chart(
+            uploaded_charts.get("composition") or uploaded_charts.get("distribution"),
+            "Uploaded Dataset Share",
+            "Share",
+        ),
+    }
+
+    if any(_chart_has_data(chart) for chart in fallback_payload.values()):
+        return fallback_payload
+
+    return sales_payload
+
+
+def build_dashboard_payload(dataframe=None, user_id=None):
     cached_payload = load_dataset_analysis()
+
+    payload = cached_payload
+    if payload:
+        payload.setdefault("summary_cards", [])
+        payload.setdefault("insight_cards", [])
+        payload.setdefault("charts", {})
+        payload.setdefault("insights", {})
+        payload.setdefault("analysis_source", "uploaded_dataset")
+        if not payload.get("retail_compatible"):
+            return payload
+
+    if dataframe is None:
+        sales_df = build_sales_dataframe(user_id=user_id)
+    else:
+        sales_df = dataframe
+
     retail_dataset_name = (
         cached_payload.get("dataset_name", "Retail Sales Records")
         if cached_payload
         else "Retail Sales Records"
     )
-    retail_payload = build_retail_analysis_payload(retail_dataset_name)
+    retail_payload = build_retail_analysis_payload(retail_dataset_name, dataframe=sales_df, user_id=user_id)
     if retail_payload:
         return retail_payload
 
-    payload = cached_payload
-    if payload:
-        payload.setdefault("summary_cards", [])
-        payload.setdefault("charts", {})
-        payload.setdefault("insights", {})
-        return payload
-
-    sales_df = build_sales_dataframe()
     if sales_df.empty:
         return build_empty_dashboard_payload()
 
@@ -159,7 +220,6 @@ def build_dashboard_payload():
         return analyze_uploaded_dataset(sales_df, "Retail Sales Records")
     except Exception:
         return build_empty_dashboard_payload()
-
 
 
 def clean_text(value, default_value):
@@ -192,7 +252,7 @@ def load_uploaded_dataframe(file_path, filename):
     return pd.read_excel(file_path)
 
 
-def import_retail_rows(dataframe):
+def import_retail_rows(dataframe, user_id=None):
     working_df = dataframe.copy()
 
     if "store_name" not in working_df.columns:
@@ -255,6 +315,7 @@ def import_retail_rows(dataframe):
             product_cache[product_name] = product
 
         sale = Sale(
+            user_id=user_id,
             store_id=store.id,
             product_id=product.id,
             quantity=int(float(row["quantity"])),
@@ -269,15 +330,58 @@ def import_retail_rows(dataframe):
     return imported_rows
 
 
+def _remove_files_in_folder(folder_path):
+    removed_files = 0
+    if not folder_path or not os.path.isdir(folder_path):
+        return removed_files
+
+    for file_name in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, file_name)
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+            removed_files += 1
+
+    return removed_files
+
+
+def clear_dashboard_data():
+    removed_upload_files = _remove_files_in_folder(current_app.config.get("UPLOAD_FOLDER"))
+    removed_model_files = _remove_files_in_folder(current_app.config.get("MODEL_FOLDER"))
+
+    analysis_cache_path = os.path.join(current_app.instance_path, "dataset_analysis.json")
+    removed_cache_files = 0
+    if os.path.exists(analysis_cache_path):
+        os.remove(analysis_cache_path)
+        removed_cache_files = 1
+
+    deleted_sales = db.session.query(Sale).delete(synchronize_session=False)
+    db.session.query(Product).delete(synchronize_session=False)
+    db.session.query(Store).delete(synchronize_session=False)
+    db.session.commit()
+
+    return {
+        "removed_upload_files": removed_upload_files,
+        "removed_model_files": removed_model_files,
+        "removed_cache_files": removed_cache_files,
+        "deleted_sales": deleted_sales,
+    }
+
+
 @main_routes.route("/")
 @login_required
 def dashboard():
-    payload = build_dashboard_payload()
-    model_info = sync_model_with_sales_data()
-    sales_overview_cards = build_sales_overview_cards()
-    next_month_prediction = predict_next_month()
+    dataframe = build_sales_dataframe(user_id=current_user.id)
+    payload = build_dashboard_payload(dataframe=dataframe, user_id=current_user.id)
+    model_info = sync_model_with_sales_data() if not dataframe.empty else None
+    sales_overview_cards = build_sales_overview_cards(dataframe=dataframe, user_id=current_user.id)
+    next_month_prediction = predict_next_month() if not dataframe.empty else None
+    uploaded_prediction = None
 
-    default_chart = {"title": "", "labels": [], "values": [], "dataset_label": ""}
+    if dataframe.empty and payload.get("summary_cards"):
+        sales_overview_cards = payload.get("summary_cards", [])
+        uploaded_prediction = predict_next_month_from_uploaded_dataset()
+
+    default_chart = {"title": "", "labels": [], "values": [], "dataset_label": "", "description": ""}
 
     if next_month_prediction is not None:
         sales_overview_cards.append(
@@ -286,23 +390,61 @@ def dashboard():
                 "value": format_display_value(next_month_prediction),
             }
         )
+    elif uploaded_prediction is not None:
+        sales_overview_cards.append(
+            {
+                "label": f"Next Month {uploaded_prediction['metric_column']} Forecast",
+                "value": format_display_value(uploaded_prediction["prediction"]),
+            }
+        )
 
     return render_template(
         "dashboard.html",
         user=current_user,
         active_dataset_name=payload.get("dataset_name", "Uploaded Dataset"),
         summary_cards=payload.get("summary_cards", []),
+        insight_cards=payload.get("insight_cards", []),
         trend_chart=payload.get("charts", {}).get("trend", default_chart),
         bar_chart=payload.get("charts", {}).get("breakdown", default_chart),
         pie_chart=payload.get("charts", {}).get("composition", default_chart),
         distribution_chart=payload.get("charts", {}).get("distribution", default_chart),
         analysis_note=payload.get("insights", {}).get("analysis_note", ""),
+        analysis_source=payload.get("analysis_source", "uploaded_dataset"),
         model_info=model_info,
         model_last_trained=model_info.get("trained_at_label") if model_info else None,
         sales_overview_cards=sales_overview_cards,
-        sales_charts=build_sales_chart_payload(),
+        sales_charts=build_live_sales_chart_payload(
+            dataframe=dataframe,
+            user_id=current_user.id,
+            dashboard_payload=payload,
+        ),
+        live_charts_are_sales=not dataframe.empty,
+        uploaded_prediction=uploaded_prediction,
         dashboard_refresh_ms=current_app.config["DASHBOARD_REFRESH_INTERVAL_MS"],
     )
+
+
+@main_routes.route("/delete-data", methods=["POST"])
+@roles_required("admin")
+def delete_data():
+    try:
+        result = clear_dashboard_data()
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Could not clear dashboard data: {str(exc)}", "danger")
+        return redirect(url_for("main_routes.dashboard"))
+
+    flash(
+        (
+            "Dashboard data cleared successfully. "
+            f"Removed {result['deleted_sales']:,} sales rows, "
+            f"{result['removed_upload_files']} uploaded files, "
+            f"{result['removed_model_files']} model files, and "
+            f"{result['removed_cache_files']} cached analysis file."
+        ),
+        "success",
+    )
+    return redirect(url_for("main_routes.dashboard"))
 
 
 @main_routes.route("/admin/users", methods=["GET", "POST"])
@@ -372,7 +514,7 @@ def manage_users():
 @main_routes.route("/api/dashboard/sales-summary")
 @login_required
 def dashboard_sales_summary():
-    return jsonify(build_sales_chart_payload())
+    return jsonify(build_live_sales_chart_payload(user_id=current_user.id))
 
 
 @main_routes.route("/upload", methods=["GET", "POST"])
@@ -416,7 +558,7 @@ def upload_data():
         retail_df = dataframe.rename(columns=column_mapping).copy()
 
         try:
-            imported_rows = import_retail_rows(retail_df)
+            imported_rows = import_retail_rows(retail_df, user_id=current_user.id)
             if imported_rows > 0:
                 analysis["retail_compatible"] = True
                 save_dataset_analysis(analysis)
@@ -469,8 +611,8 @@ def train_model_route():
 def reports():
     return render_template(
         "reports.html",
-        report_summary=build_report_summary(),
-        report_rows=build_report_rows(limit=50),
+        report_summary=build_report_summary(user_id=current_user.id),
+        report_rows=build_report_rows(limit=50, user_id=current_user.id),
     )
 
 
@@ -479,7 +621,7 @@ def reports():
 def export_sales_csv():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return send_file(
-        build_sales_csv_file(),
+        build_sales_csv_file(user_id=current_user.id),
         as_attachment=True,
         download_name=f"sales_report_{timestamp}.csv",
         mimetype="text/csv",
@@ -489,7 +631,7 @@ def export_sales_csv():
 @main_routes.route("/download-report")
 @roles_required("admin", "manager")
 def download_report():
-    report_summary = build_report_summary()
+    report_summary = build_report_summary(user_id=current_user.id)
 
     buffer = BytesIO()
     document = SimpleDocTemplate(buffer)
@@ -512,3 +654,26 @@ def download_report():
         download_name="sales_prediction_report.pdf",
         mimetype="application/pdf",
     )
+
+
+@main_routes.route("/api/ai/summary")
+@login_required
+def ai_summary():
+    summary = generate_auto_summary(user_id=current_user.id)
+    if summary is None:
+        return jsonify({"error": "AI summary unavailable. Check API key or upload data first."}), 503
+    return jsonify({"summary": summary})
+
+
+@main_routes.route("/api/ai/ask", methods=["POST"])
+@login_required
+def ai_ask():
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "Please provide a question."}), 400
+
+    result = ask_question(question, user_id=current_user.id)
+    if "error" in result:
+        return jsonify(result), 503
+    return jsonify(result)

@@ -41,6 +41,12 @@ def create_app(config_object=Config):
     db.init_app(app)
     login_manager.init_app(app)
 
+    @app.teardown_appcontext
+    def cleanup_db_session(exception=None):
+        db.session.remove()
+        if app.config.get("TESTING"):
+            db.engine.dispose()
+
     from app.models import User
 
     @login_manager.user_loader

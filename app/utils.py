@@ -6,7 +6,7 @@ import pandas as pd
 from app.models import Product, Sale, Store
 
 
-def build_sales_dataframe():
+def build_sales_dataframe(user_id=None):
     columns = [
         "sale_id",
         "store_name",
@@ -20,7 +20,10 @@ def build_sales_dataframe():
         "sale_date",
     ]
 
-    sales = Sale.query.order_by(Sale.sale_date.asc()).all()
+    query = Sale.query
+    if user_id is not None:
+        query = query.filter_by(user_id=user_id)
+    sales = query.order_by(Sale.sale_date.asc()).all()
     if not sales:
         return pd.DataFrame(columns=columns)
 
@@ -70,8 +73,9 @@ def _build_series(dataframe, frequency, label_formatter, limit):
     }
 
 
-def build_sales_chart_payload():
-    dataframe = build_sales_dataframe()
+def build_sales_chart_payload(dataframe=None, user_id=None):
+    if dataframe is None:
+        dataframe = build_sales_dataframe(user_id=user_id)
 
     daily = _build_series(dataframe, "D", lambda index: index.strftime("%d %b"), 14)
     daily.update({"title": "Daily Sales", "dataset_label": "Daily Revenue"})
@@ -86,7 +90,7 @@ def build_sales_chart_payload():
 
     monthly = _build_series(
         dataframe,
-        "M",
+        "ME",
         lambda index: index.strftime("%b %Y"),
         12,
     )
@@ -95,8 +99,9 @@ def build_sales_chart_payload():
     return {"daily": daily, "weekly": weekly, "monthly": monthly}
 
 
-def build_sales_overview_cards():
-    dataframe = build_sales_dataframe()
+def build_sales_overview_cards(dataframe=None, user_id=None):
+    if dataframe is None:
+        dataframe = build_sales_dataframe(user_id=user_id)
     if dataframe.empty:
         return [
             {"label": "Sales Records", "value": "0"},
@@ -118,8 +123,8 @@ def build_sales_overview_cards():
     ]
 
 
-def build_report_rows(limit=None):
-    dataframe = build_sales_dataframe().sort_values("sale_date", ascending=False)
+def build_report_rows(limit=None, user_id=None):
+    dataframe = build_sales_dataframe(user_id=user_id).sort_values("sale_date", ascending=False)
     if limit is not None:
         dataframe = dataframe.head(limit)
 
@@ -142,8 +147,8 @@ def build_report_rows(limit=None):
     return rows
 
 
-def build_report_summary():
-    dataframe = build_sales_dataframe()
+def build_report_summary(user_id=None):
+    dataframe = build_sales_dataframe(user_id=user_id)
     total_sales = int(len(dataframe))
     total_revenue = float(dataframe["revenue"].sum()) if not dataframe.empty else 0.0
     total_units = int(dataframe["quantity"].sum()) if not dataframe.empty else 0
@@ -161,8 +166,8 @@ def build_report_summary():
     }
 
 
-def build_sales_csv_file():
-    rows = build_report_rows()
+def build_sales_csv_file(user_id=None):
+    rows = build_report_rows(user_id=user_id)
     fieldnames = [
         "Sale ID",
         "Sale Date",
@@ -194,14 +199,15 @@ def _build_named_chart(title, dataset_label, labels, values):
     }
 
 
-def build_retail_analysis_payload(dataset_name="Retail Sales Records"):
-    dataframe = build_sales_dataframe()
+def build_retail_analysis_payload(dataset_name="Retail Sales Records", dataframe=None, user_id=None):
+    if dataframe is None:
+        dataframe = build_sales_dataframe(user_id=user_id)
     if dataframe.empty:
         return None
 
     monthly_revenue = (
         dataframe.set_index("sale_date")
-        .resample("M")["revenue"]
+        .resample("ME")["revenue"]
         .sum()
         .tail(12)
     )
@@ -228,6 +234,7 @@ def build_retail_analysis_payload(dataset_name="Retail Sales Records"):
     last_sale_date = dataframe["sale_date"].max()
 
     return {
+        "analysis_source": "retail_database",
         "dataset_name": dataset_name,
         "summary_cards": [
             {"label": "Imported Sales Rows", "value": f"{len(dataframe):,}"},
