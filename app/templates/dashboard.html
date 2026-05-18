@@ -42,6 +42,10 @@
         box-shadow: 0 0.8rem 1.6rem rgba(15, 23, 42, 0.12) !important;
     }
 
+    .metric-helper {
+        min-height: 1.25rem;
+    }
+
     @media (prefers-reduced-motion: reduce) {
         .dashboard-reveal {
             animation: none;
@@ -123,6 +127,66 @@
         </div>
         {% endfor %}
     </div>
+{% endif %}
+
+{% if analysis_source != 'uploaded_retail_dataset' and business_metrics.cards %}
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+            <div>
+                <h5 class="mb-1">{{ business_metrics.title }}</h5>
+                <p class="text-muted small mb-0">{{ business_metrics.subtitle }}</p>
+            </div>
+            <span class="badge text-bg-light border">{{ business_metrics.note }}</span>
+        </div>
+
+        {% if business_metrics.charts.gross_sales or business_metrics.charts.net_sales %}
+        <div class="row g-4 mb-3">
+            {% if business_metrics.charts.gross_sales %}
+            <div class="col-lg-6 dashboard-reveal">
+                <div class="border rounded p-3 h-100 chart-card">
+                    <h6 class="text-center mb-1">{{ business_metrics.charts.gross_sales.title }}</h6>
+                    {% if business_metrics.charts.gross_sales.description %}
+                        <p class="text-muted small text-center mb-2">{{ business_metrics.charts.gross_sales.description }}</p>
+                    {% endif %}
+                    <div style="height:260px;">
+                        <canvas id="performanceGrossSalesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if business_metrics.charts.net_sales %}
+            <div class="col-lg-6 dashboard-reveal">
+                <div class="border rounded p-3 h-100 chart-card">
+                    <h6 class="text-center mb-1">{{ business_metrics.charts.net_sales.title }}</h6>
+                    {% if business_metrics.charts.net_sales.description %}
+                        <p class="text-muted small text-center mb-2">{{ business_metrics.charts.net_sales.description }}</p>
+                    {% endif %}
+                    <div style="height:260px;">
+                        <canvas id="performanceNetSalesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="row g-3">
+            {% for card in business_metrics.cards %}
+            <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6 dashboard-reveal">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="text-muted small mb-2">{{ card.label }}</h6>
+                    <h4 class="mb-1">{{ card.value }}</h4>
+                    {% if card.helper_text %}
+                        <div class="small text-muted metric-helper">{{ card.helper_text }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
 {% endif %}
 
 {% if analysis_source != 'uploaded_retail_dataset' %}
@@ -211,6 +275,66 @@
     </div>
     {% endfor %}
 </div>
+
+{% if analysis_source == 'uploaded_retail_dataset' and business_metrics.cards %}
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+            <div>
+                <h5 class="mb-1">{{ business_metrics.title }}</h5>
+                <p class="text-muted small mb-0">{{ business_metrics.subtitle }}</p>
+            </div>
+            <span class="badge text-bg-light border">{{ business_metrics.note }}</span>
+        </div>
+
+        {% if business_metrics.charts.gross_sales or business_metrics.charts.net_sales %}
+        <div class="row g-4 mb-3">
+            {% if business_metrics.charts.gross_sales %}
+            <div class="col-lg-6 dashboard-reveal">
+                <div class="border rounded p-3 h-100 chart-card">
+                    <h6 class="text-center mb-1">{{ business_metrics.charts.gross_sales.title }}</h6>
+                    {% if business_metrics.charts.gross_sales.description %}
+                        <p class="text-muted small text-center mb-2">{{ business_metrics.charts.gross_sales.description }}</p>
+                    {% endif %}
+                    <div style="height:260px;">
+                        <canvas id="performanceGrossSalesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if business_metrics.charts.net_sales %}
+            <div class="col-lg-6 dashboard-reveal">
+                <div class="border rounded p-3 h-100 chart-card">
+                    <h6 class="text-center mb-1">{{ business_metrics.charts.net_sales.title }}</h6>
+                    {% if business_metrics.charts.net_sales.description %}
+                        <p class="text-muted small text-center mb-2">{{ business_metrics.charts.net_sales.description }}</p>
+                    {% endif %}
+                    <div style="height:260px;">
+                        <canvas id="performanceNetSalesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="row g-3">
+            {% for card in business_metrics.cards %}
+            <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6 dashboard-reveal">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="text-muted small mb-2">{{ card.label }}</h6>
+                    <h4 class="mb-1">{{ card.value }}</h4>
+                    {% if card.helper_text %}
+                        <div class="small text-muted metric-helper">{{ card.helper_text }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <div class="row g-4">
     <div class="col-md-6 dashboard-reveal">
@@ -397,6 +521,40 @@
         }
     }
     {% endif %}
+
+    const businessMetrics = {{ business_metrics | tojson }};
+    const performanceGrossSalesCanvas = document.getElementById('performanceGrossSalesChart');
+    const performanceNetSalesCanvas = document.getElementById('performanceNetSalesChart');
+
+    if (performanceGrossSalesCanvas && businessMetrics.charts && businessMetrics.charts.gross_sales) {
+        new Chart(performanceGrossSalesCanvas, {
+            type: 'bar',
+            data: {
+                labels: businessMetrics.charts.gross_sales.labels || [],
+                datasets: [{
+                    label: businessMetrics.charts.gross_sales.dataset_label || 'Gross Sales',
+                    data: businessMetrics.charts.gross_sales.values || [],
+                    backgroundColor: '#0d6efd'
+                }]
+            },
+            options: chartOptions('bar')
+        });
+    }
+
+    if (performanceNetSalesCanvas && businessMetrics.charts && businessMetrics.charts.net_sales) {
+        new Chart(performanceNetSalesCanvas, {
+            type: 'bar',
+            data: {
+                labels: businessMetrics.charts.net_sales.labels || [],
+                datasets: [{
+                    label: businessMetrics.charts.net_sales.dataset_label || 'Net Sales',
+                    data: businessMetrics.charts.net_sales.values || [],
+                    backgroundColor: '#198754'
+                }]
+            },
+            options: chartOptions('bar')
+        });
+    }
 
     new Chart(document.getElementById('lineChart'), {
         type: 'line',

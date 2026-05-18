@@ -6,7 +6,7 @@ from typing import Optional
 import pandas as pd
 from flask import current_app
 
-ANALYSIS_CACHE_VERSION = 3
+ANALYSIS_CACHE_VERSION = 4
 
 DATE_ALIAS_WEIGHTS = (
     (120, ["order date", "sale date", "transaction date", "invoice date"]),
@@ -64,6 +64,8 @@ RETAIL_COLUMN_ALIASES = {
     "date": ["transaction_date", "transaction date", "sale_date", "sale date", "order_date", "order date", "date"],
     "sales": ["sales_amount", "sales amount", "revenue", "sales", "amount", "total_sales", "total sales"],
     "quantity": ["quantity", "qty", "units", "units sold"],
+    "unit_price": ["unit_price", "unit price", "price", "rate", "selling price"],
+    "discount": ["discount_pct", "discount pct", "discount_percent", "discount percent", "discount", "discount rate"],
     "category": ["category", "product category", "department"],
     "product": ["product_name", "product name", "product", "item", "item name"],
     "segment": ["customer_segment", "customer segment", "segment"],
@@ -452,6 +454,153 @@ def _build_insight_card(label, value, helper_text=""):
     }
 
 
+def _safe_percentage(numerator, denominator):
+    if not denominator:
+        return 0.0
+    return (numerator / denominator) * 100
+
+
+def _build_business_metric_card(label, value, helper_text=""):
+    return {
+        "label": label,
+        "value": value,
+        "helper_text": helper_text,
+    }
+
+
+def _build_uploaded_sales_performance(
+    working,
+    sales_column,
+    quantity_column=None,
+    unit_price_column=None,
+    discount_column=None,
+    category_column=None,
+    channel_column=None,
+    region_column=None,
+):
+    performance = {
+        "title": "Sales Performance",
+        "subtitle": "Calculated from price, quantity, discount, and final sales amount where those columns are available.",
+        "note": "Profit metrics such as Gross Profit, EBITDA, and Net Profit need cost and expense data.",
+        "cards": [],
+        "charts": {},
+    }
+
+    if working.empty or not sales_column:
+        return performance
+
+    working = working.copy()
+    working[sales_column] = _coerce_numeric(working[sales_column]).fillna(0)
+    net_revenue = float(working[sales_column].sum())
+    gross_sales = None
+    total_units = None
+
+    if quantity_column:
+        working[quantity_column] = _coerce_numeric(working[quantity_column])
+        total_units = float(working[quantity_column].dropna().sum())
+
+    if quantity_column and unit_price_column:
+        working[unit_price_column] = _coerce_numeric(working[unit_price_column])
+        working["__gross_sales__"] = (working[quantity_column].fillna(0) * working[unit_price_column].fillna(0))
+        gross_sales = float(working["__gross_sales__"].sum())
+    elif discount_column:
+        working[discount_column] = _coerce_numeric(working[discount_column])
+        discount_rate = working[discount_column].clip(lower=0, upper=99.99) / 100
+        working["__gross_sales__"] = working[sales_column] / (1 - discount_rate)
+        gross_sales = float(working["__gross_sales__"].replace([float("inf"), -float("inf")], 0).fillna(0).sum())
+
+    if gross_sales is not None:
+        working["__discount_amount__"] = (working["__gross_sales__"] - working[sales_column]).clip(lower=0)
+        discount_amount = float(working["__discount_amount__"].sum())
+        discount_impact = _safe_percentage(discount_amount, gross_sales)
+    else:
+        discount_amount = None
+        discount_impact = None
+
+    average_selling_price = net_revenue / total_units if total_units else None
+    average_order_value = net_revenue / len(working) if len(working) else 0
+
+    if gross_sales is not None:
+        performance["cards"].append(
+            _build_business_metric_card("Gross Sales", format_display_value(gross_sales), "Before discounts")
+        )
+    performance["cards"].append(
+        _build_business_metric_card("Net Revenue", format_display_value(net_revenue), "After discounts")
+    )
+    if discount_amount is not None:
+        performance["cards"].append(
+            _build_business_metric_card(
+                "Discount Given",
+                format_display_value(discount_amount),
+                f"{discount_impact:.2f}% of gross sales",
+            )
+        )
+    if total_units is not None:
+        performance["cards"].append(
+            _build_business_metric_card("Units Sold", format_display_value(total_units), "Total quantity moved")
+        )
+    if average_selling_price is not None:
+        performance["cards"].append(
+            _build_business_metric_card("Avg Selling Price", format_display_value(average_selling_price), "Net revenue per unit")
+        )
+    performance["cards"].append(
+        _build_business_metric_card("Avg Order Value", format_display_value(average_order_value), "Net revenue per transaction")
+    )
+
+    graph_column = category_column or channel_column or region_column
+    graph_label = (
+        "Category"
+        if graph_column == category_column
+        else "Sales Channel"
+        if graph_column == channel_column
+        else "Region"
+    )
+    if gross_sales is not None and graph_column:
+        sales_groups = (
+            working.groupby(graph_column)
+            .agg(
+                gross_sales=("__gross_sales__", "sum"),
+                net_revenue=(sales_column, "sum"),
+            )
+            .sort_values("net_revenue", ascending=False)
+            .head(8)
+        )
+        labels = [str(index) for index in sales_groups.index.tolist()]
+        performance["charts"]["gross_sales"] = _build_named_chart(
+            f"Gross Sales by {graph_label}",
+            "Gross Sales",
+            labels,
+            [round(float(value), 2) for value in sales_groups["gross_sales"].tolist()],
+            f"Groups quantity multiplied by unit price across {graph_column}.",
+        )
+        performance["charts"]["net_sales"] = _build_named_chart(
+            f"Net Sales by {graph_label}",
+            "Net Sales",
+            labels,
+            [round(float(value), 2) for value in sales_groups["net_revenue"].tolist()],
+            f"Groups final sales amount after discounts across {graph_column}.",
+        )
+
+    group_column = channel_column or region_column or category_column
+    if group_column:
+        grouped_revenue = (
+            working.groupby(group_column)[sales_column]
+            .sum()
+            .sort_values(ascending=False)
+            .head(8)
+        )
+        group_label = "Sales Channel" if group_column == channel_column else "Region" if group_column == region_column else "Category"
+        performance["charts"]["revenue_mix"] = _build_named_chart(
+            f"Net Revenue by {group_label}",
+            "Net Revenue",
+            [str(index) for index in grouped_revenue.index.tolist()],
+            [round(float(value), 2) for value in grouped_revenue.tolist()],
+            f"Compares final sales amount across {group_column}.",
+        )
+
+    return performance
+
+
 def _build_uploaded_retail_payload(dataframe, dataset_name):
     columns = dataframe.columns.tolist()
     date_column = _find_column(columns, RETAIL_COLUMN_ALIASES["date"])
@@ -468,6 +617,8 @@ def _build_uploaded_retail_payload(dataframe, dataset_name):
         return None
 
     quantity_column = _find_column(columns, RETAIL_COLUMN_ALIASES["quantity"])
+    unit_price_column = _find_column(columns, RETAIL_COLUMN_ALIASES["unit_price"])
+    discount_column = _find_column(columns, RETAIL_COLUMN_ALIASES["discount"])
     category_column = _find_column(columns, RETAIL_COLUMN_ALIASES["category"])
     product_column = _find_column(columns, RETAIL_COLUMN_ALIASES["product"])
     segment_column = _find_column(columns, RETAIL_COLUMN_ALIASES["segment"])
@@ -620,6 +771,16 @@ def _build_uploaded_retail_payload(dataframe, dataset_name):
                 {"label": "Units Sold", "value": format_display_value(total_units) if total_units is not None else "Not detected"},
                 {"label": "Average Order Value", "value": format_display_value(average_order_value)},
             ],
+            "business_metrics": _build_uploaded_sales_performance(
+                working,
+                sales_column,
+                quantity_column=quantity_column,
+                unit_price_column=unit_price_column,
+                discount_column=discount_column,
+                category_column=category_column,
+                channel_column=channel_column,
+                region_column=region_column,
+            ),
             "insight_cards": insight_cards,
             "charts": {
                 "trend": _build_named_chart(
@@ -815,20 +976,6 @@ def _latest_upload_file() -> Optional[str]:
     return max(files, key=os.path.getmtime)
 
 
-def _rebuild_analysis_from_latest_upload():
-    latest_file = _latest_upload_file()
-    if not latest_file:
-        return None
-
-    try:
-        dataframe = _load_dataframe_from_file(latest_file)
-        payload = analyze_uploaded_dataset(dataframe, os.path.basename(latest_file))
-        save_dataset_analysis(payload)
-        return payload
-    except Exception:
-        return None
-
-
 def load_dataset_analysis():
     cache_path = _cache_file_path()
     if os.path.exists(cache_path):
@@ -836,20 +983,13 @@ def load_dataset_analysis():
             with open(cache_path, "r", encoding="utf-8") as cache_file:
                 payload = json.load(cache_file)
 
-            if payload.get("analysis_version") == ANALYSIS_CACHE_VERSION:
+            has_current_shape = (
+                payload.get("analysis_source") != "uploaded_retail_dataset"
+                or bool(payload.get("business_metrics"))
+            )
+            if payload.get("analysis_version") == ANALYSIS_CACHE_VERSION and has_current_shape:
                 return payload
         except Exception:
             pass
-
-    rebuilt_payload = _rebuild_analysis_from_latest_upload()
-    if rebuilt_payload is not None:
-        return rebuilt_payload
-
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as cache_file:
-                return json.load(cache_file)
-        except Exception:
-            return None
 
     return None

@@ -29,8 +29,8 @@ from app.analytics import (
 from app.decorators import roles_required
 from app.ai_insights import ask_question, generate_auto_summary
 from app.ml_model import (
+    get_cached_uploaded_prediction,
     predict_next_month,
-    predict_next_month_from_uploaded_dataset,
     sync_model_with_sales_data,
 )
 from app.models import Product, Sale, Store, User
@@ -42,6 +42,7 @@ from app.utils import (
     build_sales_csv_file,
     build_sales_dataframe,
     build_sales_overview_cards,
+    build_sales_performance_payload,
 )
 
 main_routes = Blueprint("main_routes", __name__)
@@ -123,6 +124,13 @@ def build_empty_dashboard_payload():
             {"label": "Columns", "value": "0"},
             {"label": "Missing Cells", "value": "0"},
         ],
+        "business_metrics": {
+            "title": "Sales Performance",
+            "subtitle": "Upload a retail dataset to calculate sales performance metrics.",
+            "note": "Profit metrics such as Gross Profit, EBITDA, and Net Profit need cost and expense data.",
+            "cards": [],
+            "charts": {},
+        },
         "insight_cards": [],
         "charts": {
             "trend": {"title": "Dataset Trend", "labels": [], "values": [], "dataset_label": ""},
@@ -379,7 +387,7 @@ def dashboard():
 
     if dataframe.empty and payload.get("summary_cards"):
         sales_overview_cards = payload.get("summary_cards", [])
-        uploaded_prediction = predict_next_month_from_uploaded_dataset()
+        uploaded_prediction = get_cached_uploaded_prediction()
 
     default_chart = {"title": "", "labels": [], "values": [], "dataset_label": "", "description": ""}
 
@@ -398,6 +406,18 @@ def dashboard():
             }
         )
 
+    business_metrics = payload.get("business_metrics")
+    if not business_metrics and not dataframe.empty:
+        business_metrics = build_sales_performance_payload(dataframe=dataframe, user_id=current_user.id)
+    if not business_metrics:
+        business_metrics = {
+            "title": "Sales Performance",
+            "subtitle": "Upload a retail dataset to calculate sales performance metrics.",
+            "note": "Profit metrics such as Gross Profit, EBITDA, and Net Profit need cost and expense data.",
+            "cards": [],
+            "charts": {},
+        }
+
     return render_template(
         "dashboard.html",
         user=current_user,
@@ -408,6 +428,7 @@ def dashboard():
         bar_chart=payload.get("charts", {}).get("breakdown", default_chart),
         pie_chart=payload.get("charts", {}).get("composition", default_chart),
         distribution_chart=payload.get("charts", {}).get("distribution", default_chart),
+        business_metrics=business_metrics,
         analysis_note=payload.get("insights", {}).get("analysis_note", ""),
         analysis_source=payload.get("analysis_source", "uploaded_dataset"),
         model_info=model_info,

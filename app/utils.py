@@ -123,6 +123,105 @@ def build_sales_overview_cards(dataframe=None, user_id=None):
     ]
 
 
+def _format_number(value):
+    if value is None:
+        return "Not available"
+    if float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{float(value):,.2f}"
+
+
+def _business_metric_card(label, value, helper_text=""):
+    return {
+        "label": label,
+        "value": value,
+        "helper_text": helper_text,
+    }
+
+
+def build_sales_performance_payload(dataframe=None, user_id=None):
+    if dataframe is None:
+        dataframe = build_sales_dataframe(user_id=user_id)
+
+    payload = {
+        "title": "Sales Performance",
+        "subtitle": "Calculated from stored product price, quantity, and final revenue.",
+        "note": "Profit metrics such as Gross Profit, EBITDA, and Net Profit need cost and expense data.",
+        "cards": [],
+        "charts": {},
+    }
+
+    if dataframe.empty:
+        return payload
+
+    working = dataframe.copy()
+    working["price"] = pd.to_numeric(working["price"], errors="coerce").fillna(0)
+    working["quantity"] = pd.to_numeric(working["quantity"], errors="coerce").fillna(0)
+    working["revenue"] = pd.to_numeric(working["revenue"], errors="coerce").fillna(0)
+    working["gross_sales"] = working["price"] * working["quantity"]
+    working["discount_amount"] = (working["gross_sales"] - working["revenue"]).clip(lower=0)
+
+    gross_sales = float(working["gross_sales"].sum())
+    net_revenue = float(working["revenue"].sum())
+    discount_amount = float(working["discount_amount"].sum())
+    total_units = float(working["quantity"].sum())
+    average_selling_price = net_revenue / total_units if total_units else None
+    average_order_value = net_revenue / len(working) if len(working) else 0
+    discount_impact = (discount_amount / gross_sales * 100) if gross_sales else 0
+
+    payload["cards"] = [
+        _business_metric_card("Gross Sales", _format_number(gross_sales), "Before discounts"),
+        _business_metric_card("Net Revenue", _format_number(net_revenue), "After discounts"),
+        _business_metric_card("Discount Given", _format_number(discount_amount), f"{discount_impact:.2f}% of gross sales"),
+        _business_metric_card("Units Sold", _format_number(total_units), "Total quantity moved"),
+        _business_metric_card(
+            "Avg Selling Price",
+            _format_number(average_selling_price) if average_selling_price is not None else "Not available",
+            "Net revenue per unit",
+        ),
+        _business_metric_card("Avg Order Value", _format_number(average_order_value), "Net revenue per transaction"),
+    ]
+
+    sales_by_category = (
+        working.groupby("category")
+        .agg(
+            gross_sales=("gross_sales", "sum"),
+            net_revenue=("revenue", "sum"),
+        )
+        .sort_values("net_revenue", ascending=False)
+        .head(8)
+    )
+    revenue_by_store = (
+        working.groupby("store_name")["revenue"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(8)
+    )
+
+    payload["charts"] = {
+        "gross_sales": _build_named_chart(
+            "Gross Sales by Category",
+            "Gross Sales",
+            [str(index) for index in sales_by_category.index.tolist()],
+            [round(float(value), 2) for value in sales_by_category["gross_sales"].tolist()],
+        ),
+        "net_sales": _build_named_chart(
+            "Net Sales by Category",
+            "Net Sales",
+            [str(index) for index in sales_by_category.index.tolist()],
+            [round(float(value), 2) for value in sales_by_category["net_revenue"].tolist()],
+        ),
+        "revenue_mix": _build_named_chart(
+            "Net Revenue by Store",
+            "Net Revenue",
+            [str(index) for index in revenue_by_store.index.tolist()],
+            [round(float(value), 2) for value in revenue_by_store.tolist()],
+        ),
+    }
+
+    return payload
+
+
 def build_report_rows(limit=None, user_id=None):
     dataframe = build_sales_dataframe(user_id=user_id).sort_values("sale_date", ascending=False)
     if limit is not None:

@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from datetime import datetime
 
+import pandas as pd
+
 from app import create_app, db
+from app.analytics import analyze_uploaded_dataset
 from app.ml_model import predict_next_month, sync_model_with_sales_data
 from app.models import Product, Sale, Store, User
 
@@ -47,6 +50,7 @@ class RetailAppFeatureTests(unittest.TestCase):
         db.session.commit()
 
     def _seed_sales(self):
+        staff = User.query.filter_by(username="staff").first()
         store = Store(name="Central Store", city="Hyderabad", state="Telangana")
         product = Product(name="Laptop", category="Electronics", price=50000)
         db.session.add_all([store, product])
@@ -64,6 +68,7 @@ class RetailAppFeatureTests(unittest.TestCase):
 
         for index, sale_date in enumerate(sales_dates):
             sale = Sale(
+                user_id=staff.id,
                 store_id=store.id,
                 product_id=product.id,
                 quantity=index + 1,
@@ -90,6 +95,8 @@ class RetailAppFeatureTests(unittest.TestCase):
         page_response = self.client.get("/")
         self.assertEqual(page_response.status_code, 200)
         self.assertIn(b"Live Sales Charts", page_response.data)
+        self.assertIn(b"Sales Performance", page_response.data)
+        self.assertIn(b"Discount Given", page_response.data)
 
         api_response = self.client.get("/api/dashboard/sales-summary")
         self.assertEqual(api_response.status_code, 200)
@@ -99,6 +106,46 @@ class RetailAppFeatureTests(unittest.TestCase):
         self.assertIn("weekly", payload)
         self.assertIn("monthly", payload)
         self.assertTrue(isinstance(payload["daily"]["labels"], list))
+
+    def test_uploaded_retail_performance_metrics_use_supported_columns(self):
+        dataframe = pd.DataFrame(
+            [
+                {
+                    "transaction_date": "01-01-2025",
+                    "product_name": "Shirt",
+                    "category": "Clothing",
+                    "quantity": 2,
+                    "unit_price": 500,
+                    "discount_pct": 10,
+                    "sales_amount": 900,
+                    "sales_channel": "Online",
+                    "region": "South",
+                },
+                {
+                    "transaction_date": "02-01-2025",
+                    "product_name": "Shoes",
+                    "category": "Sports",
+                    "quantity": 1,
+                    "unit_price": 1000,
+                    "discount_pct": 0,
+                    "sales_amount": 1000,
+                    "sales_channel": "In-Store",
+                    "region": "West",
+                },
+            ]
+        )
+
+        payload = analyze_uploaded_dataset(dataframe, "sample.csv")
+        metrics = payload["business_metrics"]
+        card_values = {card["label"]: card["value"] for card in metrics["cards"]}
+
+        self.assertEqual(card_values["Gross Sales"], "2,000")
+        self.assertEqual(card_values["Net Revenue"], "1,900")
+        self.assertEqual(card_values["Discount Given"], "100")
+        self.assertIn("gross_sales", metrics["charts"])
+        self.assertIn("net_sales", metrics["charts"])
+        self.assertEqual(metrics["charts"]["gross_sales"]["values"], [1000.0, 1000.0])
+        self.assertEqual(metrics["charts"]["net_sales"]["values"], [1000.0, 900.0])
 
     def test_retraining_updates_prediction_when_sales_change(self):
         with self.app.app_context():

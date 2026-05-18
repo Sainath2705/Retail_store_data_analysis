@@ -4,17 +4,21 @@ __pycache__/
 *.pyo
 *.pyd
 *.db
+.tmp/
 
 # Virtual Environment
 .venv/
+.venv312/
 venv/
 
 # Uploads
 uploads/
+retail_sales_dataset1.csv
 
 # Saved Models
 saved_models/
 *.pkl
+create_report.py
 
 # Environment
 .env
@@ -29,3 +33,4 @@ Thumbs.db
 .env
 *.log
 *.sqlite3
+instance/dataset_analysis.json

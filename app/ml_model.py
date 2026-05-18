@@ -36,6 +36,22 @@ def _metadata_path():
     return os.path.join(current_app.config["MODEL_FOLDER"], "best_model_meta.json")
 
 
+def _uploaded_forecast_cache_path():
+    return os.path.join(current_app.config["MODEL_FOLDER"], "uploaded_forecast_meta.json")
+
+
+def _uploaded_file_signature(file_path):
+    if not file_path or not os.path.exists(file_path):
+        return None
+
+    stat = os.stat(file_path)
+    return {
+        "source_file": os.path.basename(file_path),
+        "size": int(stat.st_size),
+        "modified_at": int(stat.st_mtime),
+    }
+
+
 def _safe_r2_score(y_true, predictions):
     if len(y_true) < 2:
         return 0.0
@@ -524,7 +540,31 @@ def _uploaded_metric_dataframe():
     }
 
 
+def get_cached_uploaded_prediction():
+    latest_file = _latest_upload_file()
+    signature = _uploaded_file_signature(latest_file)
+    cache_path = _uploaded_forecast_cache_path()
+    if not signature or not os.path.exists(cache_path):
+        return None
+
+    try:
+        with open(cache_path, "r", encoding="utf-8") as cache_file:
+            cached = json.load(cache_file)
+        if cached.get("file_signature") == signature:
+            return cached.get("forecast")
+    except Exception:
+        return None
+
+    return None
+
+
 def predict_next_month_from_uploaded_dataset():
+    cached_prediction = get_cached_uploaded_prediction()
+    if cached_prediction is not None:
+        return cached_prediction
+
+    latest_file = _latest_upload_file()
+    signature = _uploaded_file_signature(latest_file)
     source = _uploaded_metric_dataframe()
     if source is None:
         return None
@@ -534,13 +574,20 @@ def predict_next_month_from_uploaded_dataset():
     if prediction is None:
         return None
 
-    return {
+    forecast = {
         "prediction": prediction,
         "metric_column": source["metric_column"],
         "date_column": source["date_column"],
         "source_file": source["source_file"],
         "training_months": int(len(monthly)),
     }
+
+    if signature:
+        os.makedirs(current_app.config["MODEL_FOLDER"], exist_ok=True)
+        with open(_uploaded_forecast_cache_path(), "w", encoding="utf-8") as cache_file:
+            json.dump({"file_signature": signature, "forecast": forecast}, cache_file, indent=2)
+
+    return forecast
 
 
 def _forecast_group_series(monthly):
